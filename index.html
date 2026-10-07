@@ -274,6 +274,7 @@ function saveState(){
 }
 
 let state = loadState();
+let lastCreatedTripId = null; // 방금 등록한 출장은 목록에서 자동으로 펼쳐 보여주기 위해 기억
 
 function uid(prefix){
   const rnd = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'_'+Math.random().toString(36).slice(2));
@@ -396,54 +397,86 @@ function scorePair(slotX, slotY){
   return score;
 }
 
-function recommendForTrip(trip, opts){
+function searchRangeForTrip(trip, opts){
   opts = opts || {};
+  return {
+    from: opts.expand ? fmtISO(addDays(parseISO(trip.dateFrom), -14)) : trip.dateFrom,
+    to:   opts.expand ? fmtISO(addDays(parseISO(trip.dateTo), 14))   : trip.dateTo
+  };
+}
+
+// A(trip.teacherId)의 한 교시(slot)를 대신할 후보 목록을, 그 시점의 state.trips(이미 확정된
+// 교체들)를 반영해서 매번 새로 계산한다. recommendForTrip(화면 표시)와 autoAssignTrip(일괄 자동
+// 배정)이 같은 로직을 공유 — 자동 배정 중 앞 교시에서 쓴 교사/시간은 뒤 교시 계산에 즉시 반영된다.
+function computeCandidatesForSlot(A, trip, slot, range){
+  const candidates = [];
+  for(const B of state.teachers){
+    if(B.id===A.id) continue;
+    if(isExcludedPair(A.id, B.id, trip)) continue;
+    if(!groupCompatible(A,B)) continue;
+    if(getEffectiveBusy(B.id, slot.date, slot.w, slot.p)) continue; // B가 이미 그 시간에 수업 있음
+    if(slotTouchedByAnyDecision(B.id, slot.date, slot.w, slot.p)) continue;
+
+    const partnerOptions = [];
+    for(let w2=0; w2<5; w2++){
+      for(let p2=1; p2<=periodsFor(w2); p2++){
+        if(!getBaseCell(B.id, w2, p2)) continue; // B가 원래 수업이 있는 교시만 맞교체 대상
+        if(!groupCompatible(B, A)) continue; // B의 교시를 A가 대신할 수 있는지
+        for(const d2 of datesForWeekdayInRange(w2, range.from, range.to)){
+          if(getEffectiveBusy(B.id, d2, w2, p2) == null) continue;
+          if(getEffectiveBusy(A.id, d2, w2, p2)) continue; // A가 그 시간에 이미 수업 있음
+          if(slotTouchedByAnyDecision(A.id, d2, w2, p2) || slotTouchedByAnyDecision(B.id, d2, w2, p2)) continue;
+          const inRange = (d2 >= trip.dateFrom && d2 <= trip.dateTo);
+          partnerOptions.push({date:d2, w:w2, p:p2, inRange, score: scorePair(slot, {date:d2,w:w2}) + (inRange?5:0)});
+        }
+      }
+    }
+    partnerOptions.sort((a,b)=>b.score-a.score);
+    candidates.push({ teacherId: B.id, partnerOptions, coverOnly: partnerOptions.length===0 });
+  }
+  candidates.sort((a,b)=>{
+    const aHas = a.partnerOptions.length>0 ? 1:0, bHas = b.partnerOptions.length>0 ? 1:0;
+    if(aHas!==bHas) return bHas-aHas;
+    return (b.partnerOptions[0]?.score||0) - (a.partnerOptions[0]?.score||0);
+  });
+  return candidates;
+}
+
+function recommendForTrip(trip, opts){
   const A = getTeacher(trip.teacherId);
   const results = [];
   if(!A) return results;
-  const searchFrom = opts.expand ? fmtISO(addDays(parseISO(trip.dateFrom), -14)) : trip.dateFrom;
-  const searchTo   = opts.expand ? fmtISO(addDays(parseISO(trip.dateTo), 14)) : trip.dateTo;
-
+  const range = searchRangeForTrip(trip, opts);
   for(const slot of trip.affected){
     const existingDecision = (trip.decisions||[]).find(d=>matchSlot(d.vacated, A.id, slot.date, slot.w, slot.p));
     if(existingDecision){ results.push({slot, decided:true, decision:existingDecision}); continue; }
-
     const baseCell = getBaseCell(A.id, slot.w, slot.p);
-    const candidates = [];
-    for(const B of state.teachers){
-      if(B.id===A.id) continue;
-      if(isExcludedPair(A.id, B.id, trip)) continue;
-      if(!groupCompatible(A,B)) continue;
-      if(getEffectiveBusy(B.id, slot.date, slot.w, slot.p)) continue; // B가 이미 그 시간에 수업 있음
-      if(slotTouchedByAnyDecision(B.id, slot.date, slot.w, slot.p)) continue;
-
-      const partnerOptions = [];
-      for(let w2=0; w2<5; w2++){
-        for(let p2=1; p2<=periodsFor(w2); p2++){
-          if(!getBaseCell(B.id, w2, p2)) continue; // B가 원래 수업이 있는 교시만 맞교체 대상
-          if(!groupCompatible(B, A)) continue; // B의 교시를 A가 대신할 수 있는지
-          for(const d2 of datesForWeekdayInRange(w2, searchFrom, searchTo)){
-            if(getEffectiveBusy(B.id, d2, w2, p2) == null) continue;
-            if(getEffectiveBusy(A.id, d2, w2, p2)) continue; // A가 그 시간에 이미 수업 있음
-            if(slotTouchedByAnyDecision(A.id, d2, w2, p2) || slotTouchedByAnyDecision(B.id, d2, w2, p2)) continue;
-            const inRange = (d2 >= trip.dateFrom && d2 <= trip.dateTo);
-            partnerOptions.push({date:d2, w:w2, p:p2, inRange, score: scorePair(slot, {date:d2,w:w2}) + (inRange?5:0)});
-          }
-        }
-      }
-      partnerOptions.sort((a,b)=>b.score-a.score);
-      candidates.push({ teacherId: B.id, partnerOptions, coverOnly: partnerOptions.length===0 });
-    }
-    candidates.sort((a,b)=>{
-      const aHas = a.partnerOptions.length>0 ? 1:0, bHas = b.partnerOptions.length>0 ? 1:0;
-      if(aHas!==bHas) return bHas-aHas;
-      return (b.partnerOptions[0]?.score||0) - (a.partnerOptions[0]?.score||0);
-    });
+    const candidates = computeCandidatesForSlot(A, trip, slot, range);
     results.push({ slot, baseCell, decided:false, candidates });
   }
   return results;
 }
 function addDays(date, n){ const d=new Date(date); d.setDate(d.getDate()+n); return d; }
+
+// 영향받는 교시 전부에 대해, 맞교체 가능한 후보가 있으면 1순위 후보로 바로 확정해버리는 일괄 자동 배정.
+// 앞에서 확정한 결과가 바로 뒤 교시의 후보 계산에 반영되므로 중복 배정 걱정 없이 한 번에 돌릴 수 있다.
+// 조건에 맞는 후보가 전혀 없는 교시는 건너뛰고 "수동 처리 필요" 목록으로 남긴다.
+function autoAssignTrip(trip, opts){
+  const A = getTeacher(trip.teacherId);
+  const range = searchRangeForTrip(trip, opts);
+  let assigned=0, skipped=0;
+  for(const slot of trip.affected){
+    const already = (trip.decisions||[]).find(d=>matchSlot(d.vacated, A.id, slot.date, slot.w, slot.p));
+    if(already) continue;
+    const candidates = computeCandidatesForSlot(A, trip, slot, range);
+    if(candidates.length===0){ skipped++; continue; }
+    const top = candidates[0];
+    const partnerOption = top.partnerOptions[0] || null;
+    if(confirmDecision(trip, slot, top.teacherId, partnerOption)) assigned++;
+    else skipped++;
+  }
+  return {assigned, skipped};
+}
 
 /* =========================================================================
    확정 / 되돌리기
@@ -829,14 +862,22 @@ document.getElementById('btnAddTrip').addEventListener('click', ()=>{
     });
   const trip = { id: uid('trip'), teacherId, title, dateFrom, dateTo, excludedExtra, affected, decisions: [], createdAt: new Date().toISOString() };
   state.trips.push(trip);
+  lastCreatedTripId = trip.id;
   saveState();
   document.getElementById('tripTitle').value = '';
-  renderTrips();
-  alert(`${affected.length}개 교시가 해당 기간에 영향을 받습니다. 아래 목록에서 펼쳐 추천을 확인하세요.`);
+  const { assigned, skipped } = autoAssignTrip(trip, {});
+  saveState();
+  renderTrips(); renderHistory();
+  let msg = `영향받는 교시 ${affected.length}건 중 ${assigned}건을 자동으로 교체 배정했습니다.`;
+  if(skipped>0) msg += `\n나머지 ${skipped}건은 조건(제외 교사·전문교과·기간)에 맞는 상대를 찾지 못해 아래 목록에서 직접 확인/지정해야 합니다.`;
+  alert(msg);
 });
 
 function renderTrips(){
   const wrap = document.getElementById('tripList');
+  // 다시 그리기 전에 펼쳐져 있던 출장(details)을 기억해뒀다가 그대로 복원 — 자동 배정/확정/되돌리기
+  // 버튼을 누를 때마다 목록이 통째로 접혀버리면 방금 보던 교시를 또 찾아야 해서 불편하다.
+  const openIds = new Set(Array.from(wrap.querySelectorAll('details[open]')).map(d=>d.dataset.tripId));
   wrap.innerHTML = '';
   if(state.trips.length===0){ wrap.innerHTML = '<div class="muted">등록된 출장이 없습니다.</div>'; return; }
   for(const trip of [...state.trips].sort((a,b)=> b.createdAt.localeCompare(a.createdAt))){
@@ -844,6 +885,8 @@ function renderTrips(){
     const done = (trip.decisions||[]).length;
     const total = trip.affected.length;
     const det = document.createElement('details');
+    det.dataset.tripId = trip.id;
+    if(openIds.has(trip.id) || trip.id === lastCreatedTripId) det.open = true;
     const summary = document.createElement('summary');
     summary.innerHTML = `${escapeHtml(A?A.name:'(삭제된 교사)')} <span class="badge">${trip.dateFrom} ~ ${trip.dateTo}</span>` +
       `<span class="badge ${done===total?'ok':''}">${done}/${total} 확정</span>` +
@@ -853,10 +896,12 @@ function renderTrips(){
     body.className = 'body';
     body.innerHTML = `
       <div class="toolbar">
-        <button class="btnRecommend small primary">추천 다시 계산</button>
+        <button class="btnAutoAssign small primary">남은 교시 전체 자동 배정</button>
+        <button class="btnRecommend small">추천 다시 보기</button>
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 기간 밖(±14일)에서도 찾기</label>
         <button class="btnDeleteTrip small danger" style="margin-left:auto">출장 삭제</button>
       </div>
+      <div class="hint">자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.</div>
       <div class="recoWrap"></div>
     `;
     det.appendChild(body);
@@ -922,6 +967,15 @@ function renderTrips(){
     renderReco();
     body.querySelector('.btnRecommend').addEventListener('click', renderReco);
     body.querySelector('.chkExpand').addEventListener('change', renderReco);
+    body.querySelector('.btnAutoAssign').addEventListener('click', ()=>{
+      const expand = body.querySelector('.chkExpand').checked;
+      const { assigned, skipped } = autoAssignTrip(trip, {expand});
+      saveState();
+      renderReco(); renderTrips(); renderHistory();
+      let msg = `${assigned}건 자동 배정 완료.`;
+      if(skipped>0) msg += ` ${skipped}건은 조건에 맞는 후보가 없어 건너뛰었습니다(아래에서 직접 지정 가능).`;
+      alert(msg);
+    });
     body.querySelector('.btnDeleteTrip').addEventListener('click', ()=>{
       if(!confirm('이 출장과 관련 교체 계획을 삭제할까요? 이미 확정된 교체도 함께 취소됩니다.')) return;
       state.trips = state.trips.filter(x=>x.id!==trip.id);
@@ -929,6 +983,7 @@ function renderTrips(){
       renderTrips(); renderHistory();
     });
   }
+  lastCreatedTripId = null; // 한 번 펼쳐 보여줬으면 그 다음부터는 사용자가 접고 펴는 대로 둔다
 }
 
 function openManualAssign(trip, slot, onDone){
