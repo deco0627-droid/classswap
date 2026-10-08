@@ -620,8 +620,11 @@ function renderTeachers(){
     wrap.appendChild(det);
 
     const exWrap = body.querySelector('.f-excluded');
-    for(const other of state.teachers){
-      if(other.id===t.id) continue;
+    const others = state.teachers.filter(other=>other.id!==t.id);
+    if(others.length===0){
+      exWrap.innerHTML = '<div class="muted">다른 교사를 먼저 등록하면 여기서 제외할 교사를 고를 수 있습니다.</div>';
+    }
+    for(const other of others){
       const label = document.createElement('label');
       label.style.display='flex'; label.style.alignItems='center'; label.style.gap='4px';
       label.innerHTML = `<input type="checkbox" value="${other.id}" ${ (t.excluded||[]).includes(other.id)?'checked':''}> ${escapeHtml(other.name)}`;
