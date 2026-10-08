@@ -140,8 +140,16 @@
       <h2>2단계 · 머리글 열 매칭 확인 (자동 인식 실패 시 직접 지정)</h2>
       <div class="row">
         <div class="field">
-          <label>머리글(요일/교시) 행 번호</label>
-          <input type="number" id="headerRowIdx" min="0" style="width:70px" value="0">
+          <label>요일(월/화/…) 행 번호</label>
+          <input type="number" id="weekdayRowIdx" min="0" style="width:70px" value="0">
+        </div>
+        <div class="field">
+          <label>교시(1/2/…) 행 번호</label>
+          <input type="number" id="periodRowIdx" min="0" style="width:70px" value="1">
+        </div>
+        <div class="field">
+          <label>데이터 시작 행 번호</label>
+          <input type="number" id="dataStartRowIdx" min="0" style="width:70px" value="2">
         </div>
         <div class="field">
           <label>교사 이름 열 번호</label>
@@ -149,6 +157,7 @@
         </div>
         <button id="btnRemap">다시 계산</button>
       </div>
+      <div class="hint">요일 행과 교시 행이 같은 줄에 "월1"처럼 합쳐져 있으면 두 번호를 똑같이 입력하세요. 요일이 병합된 셀이라 빈칸으로 붙여넣어져도 왼쪽 값을 자동으로 채워 인식합니다.</div>
       <div id="colMapTable" style="overflow-x:auto;margin-top:10px"></div>
       <div class="hint">자동 인식이 안 된 열은 "사용 안 함"으로 비워두면 가져오기에서 제외됩니다.</div>
     </div>
@@ -682,23 +691,71 @@ renderPeriodsByDay();
 /* =========================================================================
    시간표 가져오기 (붙여넣기 / 엑셀 업로드 -> 매칭 -> 미리보기 -> 확정)
    =========================================================================*/
-let importState = { rows: [], headerRowIdx:0, teacherColIdx:0, colMap:{} };
+let importState = { rows: [], weekdayRowIdx:0, periodRowIdx:1, dataStartRowIdx:2, teacherColIdx:0, colMap:{} };
 
+// 엑셀에서 복사한 범위를 붙여넣으면, 셀 안에 줄바꿈(Alt+Enter로 두 줄짜리 칸)이나 탭·따옴표가
+// 있는 칸은 CSV와 같은 규칙으로 큰따옴표로 감싸져 들어온다. 이를 무시하고 그냥 줄바꿈마다 새
+// 행으로 쪼개면(단순 split('\n')) 교사명이나 "교실\n과목"처럼 두 줄짜리 칸에서 행이 밀려버려
+// 이후 전부 어긋난다. 따옴표를 인식하는 파서로 이를 제대로 처리한다.
 function parseDelimited(text){
-  return text.replace(/\r/g,'').split('\n').filter(l=>l.length>0).map(line=>line.split('\t'));
-}
-function autoDetectSlot(label){
-  if(!label) return null;
-  const s = String(label).trim();
-  const map = {'월':0,'화':1,'수':2,'목':3,'금':4,'mon':0,'tue':1,'wed':2,'thu':3,'fri':4};
-  const m = s.match(/(월|화|수|목|금|mon|tue|wed|thu|fri)[^\d]{0,3}(\d+)/i);
-  if(m){
-    const key = m[1].length>1 ? m[1].toLowerCase() : m[1];
-    const w = map[key];
-    const p = parseInt(m[2],10);
-    if(w!=null && p>0) return {w,p};
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  const s = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for(let i=0; i<s.length; i++){
+    const ch = s[i];
+    if(inQuotes){
+      if(ch === '"'){
+        if(s[i+1] === '"'){ field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if(ch === '"' && field === ''){
+      inQuotes = true;
+    } else if(ch === '\t'){
+      row.push(field); field = '';
+    } else if(ch === '\n'){
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else field += ch;
   }
-  return null;
+  if(field !== '' || row.length>0){ row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c=>c.trim()!==''));
+}
+
+// 요일 머리글이 "월~금 중 하나 셀을 여러 칸에 병합"해둔 경우, 그 범위를 복사해 붙여넣으면
+// 맨 왼쪽 칸에만 값이 남고 나머지는 빈 문자열로 들어온다. 왼쪽 값으로 빈 칸을 채워 보정한다.
+function forwardFill(rowArr){
+  const out = []; let last = '';
+  for(const v of (rowArr||[])){
+    if(v != null && String(v).trim() !== '') last = String(v).trim();
+    out.push(last);
+  }
+  return out;
+}
+function detectWeekdayFromText(s){
+  if(!s) return null;
+  const map = {'월':0,'화':1,'수':2,'목':3,'금':4,'mon':0,'tue':1,'wed':2,'thu':3,'fri':4};
+  const m = String(s).trim().match(/(월|화|수|목|금|mon|tue|wed|thu|fri)/i);
+  if(!m) return null;
+  const key = m[1].length>1 ? m[1].toLowerCase() : m[1];
+  return map[key] ?? null;
+}
+function detectPeriodFromText(s){
+  if(!s) return null;
+  const m = String(s).trim().match(/(\d+)/);
+  return m ? parseInt(m[1],10) : null;
+}
+// "(41)윤제남\n(17)2A" 처럼 번호·총시수가 같이 붙은 두 줄짜리 교사명 칸에서 이름만 뽑아낸다.
+function cleanTeacherName(raw){
+  const firstLine = String(raw||'').split('\n')[0];
+  return firstLine.replace(/^\(\s*\d+\s*\)\s*/, '').trim();
+}
+// "305\n로봇3B"처럼 교실 번호와 과목이 두 줄로 들어있는 칸에서 과목/교실을 분리한다.
+function splitCellContent(raw){
+  const lines = String(raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  if(lines.length===0) return {subject:'', room:''};
+  if(lines.length===1) return {subject:lines[0], room:''};
+  if(/^\d+[A-Za-z]?$/.test(lines[0])) return {subject: lines.slice(1).join(' '), room: lines[0]};
+  return {subject: lines.join(' '), room:''};
 }
 
 document.getElementById('btnParsePaste').addEventListener('click', ()=>{
@@ -717,7 +774,7 @@ document.getElementById('fileImportXlsx').addEventListener('change', e=>{
       const wb = XLSX.read(data, {type:'array'});
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
-      importState.rows = rows.map(r=>r.map(c=> c==null ? '' : String(c)));
+      importState.rows = rows.map(r=>r.map(c=> c==null ? '' : String(c))).filter(r=>r.some(c=>c.trim()!==''));
       startImportMapping();
     }catch(err){
       alert('파일을 읽는 중 오류: ' + err.message);
@@ -729,10 +786,14 @@ document.getElementById('fileImportXlsx').addEventListener('change', e=>{
 
 function startImportMapping(){
   if(importState.rows.length < 2){ alert('데이터가 너무 적습니다. 머리글 행과 데이터 행이 모두 필요합니다.'); return; }
-  importState.headerRowIdx = 0;
+  importState.weekdayRowIdx = 0;
+  importState.periodRowIdx = importState.rows.length > 2 ? 1 : 0; // 보통 요일 행 다음 줄이 교시 행
+  importState.dataStartRowIdx = importState.periodRowIdx + 1;
   importState.teacherColIdx = 0;
-  document.getElementById('headerRowIdx').value = 0;
-  document.getElementById('teacherColIdx').value = 0;
+  document.getElementById('weekdayRowIdx').value = importState.weekdayRowIdx;
+  document.getElementById('periodRowIdx').value = importState.periodRowIdx;
+  document.getElementById('dataStartRowIdx').value = importState.dataStartRowIdx;
+  document.getElementById('teacherColIdx').value = importState.teacherColIdx;
   recomputeColMap();
   document.getElementById('importMapCard').style.display = '';
   document.getElementById('importPreviewCard').style.display = '';
@@ -741,7 +802,9 @@ function startImportMapping(){
 }
 
 document.getElementById('btnRemap').addEventListener('click', ()=>{
-  importState.headerRowIdx = parseInt(document.getElementById('headerRowIdx').value,10) || 0;
+  importState.weekdayRowIdx = parseInt(document.getElementById('weekdayRowIdx').value,10) || 0;
+  importState.periodRowIdx = parseInt(document.getElementById('periodRowIdx').value,10) || 0;
+  importState.dataStartRowIdx = parseInt(document.getElementById('dataStartRowIdx').value,10) || 0;
   importState.teacherColIdx = parseInt(document.getElementById('teacherColIdx').value,10) || 0;
   recomputeColMap();
   renderColMapTable();
@@ -749,27 +812,33 @@ document.getElementById('btnRemap').addEventListener('click', ()=>{
 });
 
 function recomputeColMap(){
-  const header = importState.rows[importState.headerRowIdx] || [];
+  const weekdayRow = forwardFill(importState.rows[importState.weekdayRowIdx] || []);
+  const periodRow = importState.rows[importState.periodRowIdx] || [];
+  const width = Math.max(weekdayRow.length, periodRow.length);
   const map = {};
-  header.forEach((label, idx)=>{
-    if(idx === importState.teacherColIdx) return;
-    map[idx] = autoDetectSlot(label); // {w,p} 또는 null
-  });
+  for(let idx=0; idx<width; idx++){
+    if(idx === importState.teacherColIdx) continue;
+    const w = detectWeekdayFromText(weekdayRow[idx]);
+    const p = detectPeriodFromText(periodRow[idx]);
+    map[idx] = (w!=null && p!=null) ? {w,p} : null;
+  }
   importState.colMap = map;
 }
 
 function renderColMapTable(){
-  const header = importState.rows[importState.headerRowIdx] || [];
+  const weekdayRow = forwardFill(importState.rows[importState.weekdayRowIdx] || []);
+  const periodRow = importState.rows[importState.periodRowIdx] || [];
+  const width = Math.max(weekdayRow.length, periodRow.length);
   const wrap = document.getElementById('colMapTable');
-  let html = '<table class="grid-import-table"><tr><th>열#</th><th>원본 머리글</th><th>요일</th><th>교시</th></tr>';
-  header.forEach((label, idx)=>{
+  let html = '<table class="grid-import-table"><tr><th>열#</th><th>요일 원문</th><th>교시 원문</th><th>요일</th><th>교시</th></tr>';
+  for(let idx=0; idx<width; idx++){
     if(idx === importState.teacherColIdx){
-      html += `<tr><td>${idx}</td><td>${escapeHtml(label)}</td><td colspan="2" class="muted">교사 이름 열</td></tr>`;
-      return;
+      html += `<tr><td>${idx}</td><td colspan="2" class="muted">교사 이름 열</td><td colspan="2" class="muted">-</td></tr>`;
+      continue;
     }
     const cur = importState.colMap[idx];
     html += `<tr>
-      <td>${idx}</td><td>${escapeHtml(label)}</td>
+      <td>${idx}</td><td>${escapeHtml(weekdayRow[idx]||'')}</td><td>${escapeHtml(periodRow[idx]||'')}</td>
       <td><select data-col="${idx}" data-part="w" class="colmap-select">
             <option value="-1">사용 안 함</option>
             ${WEEKDAY_LABELS.map((wl,wi)=>`<option value="${wi}" ${cur&&cur.w===wi?'selected':''}>${wl}</option>`).join('')}
@@ -778,7 +847,7 @@ function renderColMapTable(){
             ${Array.from({length:maxPeriods()},(_,i)=>i+1).map(p=>`<option value="${p}" ${cur&&cur.p===p?'selected':''}>${p}교시</option>`).join('')}
           </select></td>
     </tr>`;
-  });
+  }
   html += '</table>';
   wrap.innerHTML = html;
 
@@ -794,26 +863,30 @@ function renderColMapTable(){
   });
 }
 
+function importDataRows(){
+  return importState.rows.slice(importState.dataStartRowIdx).filter(row => cleanTeacherName(row[importState.teacherColIdx]));
+}
+
 function renderImportPreview(){
-  const header = importState.rows[importState.headerRowIdx] || [];
-  const dataRows = importState.rows.filter((_,i)=>i!==importState.headerRowIdx);
+  const dataRows = importDataRows();
   const mappedCols = Object.keys(importState.colMap).map(Number).filter(idx=>importState.colMap[idx]);
   let html = '<table class="grid-import-table"><tr><th>교사명</th>' +
     mappedCols.map(idx=>`<th>${WEEKDAY_LABELS[importState.colMap[idx].w]}${importState.colMap[idx].p}</th>`).join('') + '</tr>';
   dataRows.slice(0,200).forEach(row=>{
-    const name = row[importState.teacherColIdx] || '';
-    if(!String(name).trim()) return;
+    const name = cleanTeacherName(row[importState.teacherColIdx]);
     html += `<tr><td>${escapeHtml(name)}</td>` +
-      mappedCols.map(idx=>`<td>${escapeHtml(row[idx]||'')}</td>`).join('') + '</tr>';
+      mappedCols.map(idx=>`<td>${escapeHtml(splitCellContent(row[idx]).subject)}</td>`).join('') + '</tr>';
   });
   html += '</table>';
+  if(dataRows.length===0) html += '<div class="muted" style="margin-top:6px">데이터 행이 없습니다. "데이터 시작 행 번호"를 확인하세요.</div>';
   document.getElementById('importPreview').innerHTML = html;
 }
 
 document.getElementById('btnCommitImport').addEventListener('click', ()=>{
-  const dataRows = importState.rows.filter((_,i)=>i!==importState.headerRowIdx);
+  const dataRows = importDataRows();
   const mappedCols = Object.keys(importState.colMap).map(Number).filter(idx=>importState.colMap[idx]);
   if(mappedCols.length===0){ alert('매칭된 요일/교시 열이 없습니다.'); return; }
+  if(dataRows.length===0){ alert('가져올 데이터 행이 없습니다. "데이터 시작 행 번호"를 확인하세요.'); return; }
   // 가져오는 데이터에 현재 설정보다 많은 교시가 있으면 요일별 교시 수를 자동으로 늘려줌
   let expanded = [];
   for(const idx of mappedCols){
@@ -825,7 +898,7 @@ document.getElementById('btnCommitImport').addEventListener('click', ()=>{
   }
   let added=0, updated=0;
   for(const row of dataRows){
-    const name = String(row[importState.teacherColIdx]||'').trim();
+    const name = cleanTeacherName(row[importState.teacherColIdx]);
     if(!name) continue;
     let teacher = state.teachers.find(t=>t.name===name);
     if(!teacher){
@@ -835,12 +908,12 @@ document.getElementById('btnCommitImport').addEventListener('click', ()=>{
     } else updated++;
     for(const idx of mappedCols){
       const {w,p} = importState.colMap[idx];
-      const text = String(row[idx]||'').trim();
-      setBaseCell(teacher.id, w, p, text ? {subject:text, className:''} : null);
+      const {subject, room} = splitCellContent(row[idx]);
+      setBaseCell(teacher.id, w, p, subject ? {subject, className: room} : null);
     }
   }
   saveState();
-  alert(`가져오기 완료: 새 교사 ${added}명, 기존 교사 ${updated}명 갱신` + (expanded.length ? `\n(교시 수 자동 조정: ${expanded.join(', ')})` : ''));
+  alert(`가져오기 완료: 새 교사 ${added}명, 기존 교사 ${updated}명 갱신` + (expanded.length ? `\n(교시 수 자동 조정: ${expanded.join(', ')})` : '') + `\n\n"교사 관리" 탭에 자동으로 반영됐습니다.`);
   renderTeachers(); renderAllSelects(); renderTimetableEditGrid(); renderPeriodsByDay();
 });
 
