@@ -865,7 +865,9 @@ function renderTeachers(){
         <div class="row f-excluded"></div>
       </div>
       <div class="field" style="margin-top:8px">
-        <label>배정 불가 시간(항상) — 수업이 없어도 회의·당직 등으로 이 교사를 이 시간엔 절대 배정할 수 없을 때</label>
+        <label>배정 불가 시간(항상) — 수업이 없어도 회의·당직 등으로 이 교사를 이 시간엔 절대 배정할 수 없을 때
+          <button type="button" class="btnBlockedClear small" style="margin-left:6px">체크 전체 해제</button>
+        </label>
         <div class="f-blocked" style="overflow-x:auto"></div>
       </div>
       <div class="toolbar" style="margin-top:10px">
@@ -892,6 +894,9 @@ function renderTeachers(){
       bHtml += '</table>';
       blockedWrap.innerHTML = bHtml;
     }
+    body.querySelector('.btnBlockedClear').addEventListener('click', ()=>{
+      blockedWrap.querySelectorAll('.f-blocked-chk').forEach(cb=>cb.checked=false);
+    });
 
     const exWrap = body.querySelector('.f-excluded');
     const others = state.teachers.filter(other=>other.id!==t.id);
@@ -1014,12 +1019,12 @@ function renderPeriodTimes(){
   const periods = maxPeriods();
   // 가로로 늘어놓으면(교시마다 한 칸) 입력칸이 좁아져 시각이 잘려 보이는 문제가 있어 — 교시를
   // 세로로 한 줄씩 나열하는 방식으로 바꿈(칸마다 충분한 너비 확보).
-  let html = '<table><tr><th>교시</th><th>시작</th><th>종료</th></tr>';
+  let html = '<table style="table-layout:fixed;width:340px"><colgroup><col style="width:80px"><col style="width:130px"><col style="width:130px"></colgroup><tr><th>교시</th><th>시작</th><th>종료</th></tr>';
   for(let p=1;p<=periods;p++){
     const t = state.settings.periodTimes[p] || {};
     html += `<tr><th>${p}교시</th>
-      <td><input type="time" class="f-ptime-start" data-p="${p}" value="${t.start||''}" style="width:130px"></td>
-      <td><input type="time" class="f-ptime-end" data-p="${p}" value="${t.end||''}" style="width:130px"></td></tr>`;
+      <td><input type="time" class="f-ptime-start" data-p="${p}" value="${t.start||''}" style="width:100%"></td>
+      <td><input type="time" class="f-ptime-end" data-p="${p}" value="${t.end||''}" style="width:100%"></td></tr>`;
   }
   html += '</table>';
   wrap.innerHTML = html;
