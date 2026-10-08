@@ -61,6 +61,14 @@ service cloud.firestore {
                      || (isApproved() && resource.data.teacherId == myTeacherId() && resource.data.status == 'pending');
     }
 
+    // 교사(일반) 계정이 "새 출장 등록"에서 제외할 교사를 고를 때 쓰는, 이름만 담긴 아주 작은
+    // 공개 목록(과목·시간표·전문교과 등은 전혀 없음). 승인된 계정이면 누구나 읽을 수 있고,
+    // 쓰기는 관리자(발행 로직)만.
+    match /classswap_public/{docId} {
+      allow read: if isApproved();
+      allow write: if isAdminRole();
+    }
+
     // 아직 승인 안 된 이메일로 로그인을 시도하면 본인 명의로 남기는 기록. 승인 전이라 다른 건
     // 전혀 못 읽고 쓰는 상태에서도 이 한 문서(자기 이메일)만은 만들 수 있게 해서, 관리자가
     // "관리자" 탭에서 보고 이메일을 몰라도 승인 버튼을 누를 수 있게 한다. 읽기/삭제는 관리자만 —
