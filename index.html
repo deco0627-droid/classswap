@@ -106,6 +106,11 @@
       <h2>설정</h2>
       <div class="row" id="periodsByDayRow"></div>
       <div class="hint">요일마다 교시 수가 다르면 요일별로 따로 입력하세요(예: 금요일만 5교시). 교시 수보다 많은 칸은 시간표 화면에서 회색으로 비활성 처리됩니다.</div>
+      <div class="field" style="margin-top:10px;max-width:520px">
+        <label>수업 교환 대상에서 제외할 과목명 (쉼표로 구분)</label>
+        <input type="text" id="excludedSubjects" placeholder="예: 창체, 자습">
+      </div>
+      <div class="hint">여기 적은 과목은 출장 기간이어도 "교체가 필요한 교시"로 잡지 않고, 다른 수업을 옮겨 넣을 자리로도 쓰지 않습니다. 창체(창의적 체험활동)처럼 1:1 교과 교체 대상이 아닌 과목을 적어두세요.</div>
     </div>
     <div class="card">
       <div class="toolbar">
@@ -270,7 +275,7 @@ const JSDAY_FOR_INDEX = [1,2,3,4,5]; // Date.getDay(): 0=일 ... 6=토. 월=1..�
 
 function defaultState(){
   return {
-    settings: { periodsByDay: [7,7,7,7,7] }, // 월~금 요일별 교시 수
+    settings: { periodsByDay: [7,7,7,7,7], excludedSubjects: ['창체'] }, // 월~금 요일별 교시 수, 수업교환 대상에서 제외할 과목명
     teachers: [],   // {id, name, subject, specialized, specialtyGroup, excluded:[id,...]}
     timetable: {},  // teacherId -> { "w-p": {subject, className} }
     trips: []       // {id, teacherId, title, dateFrom, dateTo, excludedExtra:[id], affected:[{date,w,p}], decisions:[...], createdAt}
@@ -467,7 +472,7 @@ function computeSwapCandidates(A, trip, slot, range){
     const partnerOptions = [];
     for(let w2=0; w2<5; w2++){
       for(let p2=1; p2<=periodsFor(w2); p2++){
-        if(!getBaseCell(B.id, w2, p2)) continue; // B가 원래 수업이 있는 교시만 맞교체 대상
+        if(!isSwappableCell(getBaseCell(B.id, w2, p2))) continue; // B가 원래 (교환 가능한) 수업이 있는 교시만 맞교체 대상
         if(!groupCompatible(B, A)) continue; // B의 교시를 A가 대신할 수 있는지
         for(const d2 of datesForWeekdayInRange(w2, range.from, range.to)){
           if(getEffectiveBusy(B.id, d2, w2, p2) == null) continue;
@@ -696,6 +701,22 @@ function renderPeriodsByDay(){
   });
 }
 renderPeriodsByDay();
+
+function renderExcludedSubjects(){
+  document.getElementById('excludedSubjects').value = (state.settings.excludedSubjects||[]).join(', ');
+}
+renderExcludedSubjects();
+document.getElementById('excludedSubjects').addEventListener('change', e=>{
+  state.settings.excludedSubjects = e.target.value.split(',').map(s=>s.trim()).filter(Boolean);
+  saveState();
+  renderTrips(); // 이미 등록된 출장의 "영향받는 교시"는 바뀌지 않지만, 새로 추천 계산할 때는 반영됨을 알리기 위해 다시 그림
+});
+function isExcludedSubject(subject){
+  return (state.settings.excludedSubjects||[]).includes(String(subject||'').trim());
+}
+function isSwappableCell(cell){
+  return !!cell && !isExcludedSubject(cell.subject);
+}
 
 /* =========================================================================
    시간표 가져오기 (붙여넣기 / 엑셀 업로드 -> 매칭 -> 미리보기 -> 확정)
@@ -1048,13 +1069,13 @@ document.getElementById('btnAddTrip').addEventListener('click', ()=>{
   const excludedExtra = Array.from(document.querySelectorAll('#tripExtraExclude input:checked')).map(i=>i.value);
   const affected = expandRange(dateFrom, dateTo)
     .filter(slot => {
-      for(let p=1;p<=periodsFor(slot.w);p++){ if(getBaseCell(teacherId, slot.w, p)) return true; }
+      for(let p=1;p<=periodsFor(slot.w);p++){ if(isSwappableCell(getBaseCell(teacherId, slot.w, p))) return true; }
       return false;
     })
     .flatMap(slot => {
       const out = [];
       for(let p=1;p<=periodsFor(slot.w);p++){
-        if(getBaseCell(teacherId, slot.w, p)) out.push({date:slot.date, w:slot.w, p});
+        if(isSwappableCell(getBaseCell(teacherId, slot.w, p))) out.push({date:slot.date, w:slot.w, p});
       }
       return out;
     });
