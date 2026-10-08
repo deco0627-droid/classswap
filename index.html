@@ -2177,9 +2177,10 @@ function renderTrips(){
           </select>
         </label>
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 더 넓게(전후 3주) 찾기</label>
-        ${isAdmin ? '<button class="btnUndoAll small danger" style="margin-left:auto">전체 되돌리기(새로 구성)</button><button class="btnDeleteTrip small danger">출장 삭제</button>' : ''}
+        ${isAdmin ? '<button class="btnUndoAll small danger" style="margin-left:auto">전체 되돌리기(새로 구성)</button>' : ''}
+        ${canAct ? `<button class="btnDeleteTrip small danger"${isAdmin?'':' style="margin-left:auto"'}>출장 삭제</button>` : ''}
       </div>
-      <div class="hint">${isAdmin ? '자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.' : isMine ? '아래 후보 중 하나를 골라 요청하거나 확정된 걸 되돌리면, 관리자 승인 없이(관리자 화면이 켜져 있을 때) 자동으로 반영됩니다.' : '다른 선생님 출장입니다 — 조회만 가능합니다.'}</div>
+      <div class="hint">${isAdmin ? '자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.' : isMine ? '아래 후보 중 하나를 골라 요청하거나 확정된 걸 되돌리면, 관리자 승인 없이(관리자 화면이 켜져 있을 때) 자동으로 반영됩니다. 이 출장 자체를 지우고 싶으면 "출장 삭제"를 누르세요(마찬가지로 승인 없이 자동 처리).' : '다른 선생님 출장입니다 — 조회만 가능합니다.'}</div>
       ${isAdmin ? `<div class="card" style="background:var(--panel);margin-top:10px">
         <div style="font-weight:600;margin-bottom:6px">이미 정해진 교사로 일괄 배정</div>
         <div class="hint" style="margin-top:0">장기 병휴가처럼 "이 요일 이 교시는 OO 선생님이 계속 대신한다"가 이미 정해져 있을 때, 추천을 거치지 않고 아직 확정 안 된 교시들에 한 번에 단순 대체로 지정합니다. 이렇게 지정해두면 다른 출장 건을 등록할 때도 그 선생님이 이 시간엔 이미 바쁜 것으로 정확히 반영됩니다.</div>
@@ -2362,11 +2363,17 @@ function renderTrips(){
         saveState();
         renderReco(); renderTrips(); renderHistory();
       });
+    }
+    if(canAct){
       body.querySelector('.btnDeleteTrip').addEventListener('click', ()=>{
         if(!confirm('이 출장과 관련 교체 계획을 삭제할까요? 이미 확정된 교체도 함께 취소됩니다.')) return;
-        state.trips = state.trips.filter(x=>x.id!==trip.id);
-        saveState();
-        renderTrips(); renderHistory();
+        if(isAdmin){
+          state.trips = state.trips.filter(x=>x.id!==trip.id);
+          saveState();
+          renderTrips(); renderHistory();
+        } else {
+          requestDeleteTrip(trip.id);
+        }
       });
     }
   } // trip 루프 끝
@@ -2825,6 +2832,19 @@ function requestUndo(tripId, blockId){
     requestedAt: firebase.firestore.FieldValue.serverTimestamp()
   }).catch(err=>{ alert('요청 실패: ' + err.message); });
 }
+// 교사가 본인 출장 전체(미확정 교시·확정된 교체 전부)를 직접 삭제 — 호출하는 쪽(renderTrips의
+// .btnDeleteTrip)에서 이미 확인(confirm)을 받으므로 여기선 따로 묻지 않는다.
+function requestDeleteTrip(tripId){
+  if(!myLinkedTeacherId || !currentUser) return;
+  db.collection('classswap_requests').add({
+    type: 'deleteTrip',
+    teacherId: myLinkedTeacherId,
+    tripId,
+    status: 'pending',
+    requestedBy: currentUser.email,
+    requestedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(err=>{ alert('요청 실패: ' + err.message); });
+}
 function roleLabel(role){
   return { vacated:'출장(공강)', covered:'대체로 들어감', reciprocalVacated:'맞교체로 내 자리 비움', reciprocalCovered:'맞교체로 대신 들어감' }[role] || role;
 }
@@ -3038,6 +3058,7 @@ function autoProcessRequests(){
   for(const r of allRequests){
     if(r.type === 'newTrip'){ processNewTripRequest(r); continue; }
     if(r.type === 'undo'){ processUndoRequest(r); continue; }
+    if(r.type === 'deleteTrip'){ processDeleteTripRequest(r); continue; }
     const trip = state.trips.find(t=>t.id===r.tripId);
     if(!trip){ db.collection('classswap_requests').doc(r.id).delete(); continue; }
     const slot = { date: r.date, w: r.w, periods: r.periods };
@@ -3066,6 +3087,17 @@ function processUndoRequest(r){
   const trip = state.trips.find(t=>t.id===r.tripId);
   if(!trip || !r.blockId){ db.collection('classswap_requests').doc(r.id).delete(); return; }
   undoDecisionBlock(trip, r.blockId); // 이미 없어졌어도(먼저 처리됐거나) 그냥 무해하게 넘어감
+  db.collection('classswap_requests').doc(r.id).delete();
+  renderTrips(); renderHistory();
+}
+// 교사가 본인 출장 전체를 삭제해달라고 올린 요청을 관리자 세션이 그대로 처리. 혹시라도 그 사이
+// 다른 교사의 출장으로 바뀌는 일은 없지만(trip.teacherId는 안 바뀜), 만일을 대비해 요청자 본인
+// 출장이 맞는지 한 번 더 확인한다.
+function processDeleteTripRequest(r){
+  const trip = state.trips.find(t=>t.id===r.tripId);
+  if(!trip || trip.teacherId !== r.teacherId){ db.collection('classswap_requests').doc(r.id).delete(); return; }
+  state.trips = state.trips.filter(x=>x.id!==r.tripId);
+  saveState();
   db.collection('classswap_requests').doc(r.id).delete();
   renderTrips(); renderHistory();
 }
