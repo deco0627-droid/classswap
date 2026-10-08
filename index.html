@@ -82,6 +82,7 @@
   table{ width:100%; border-collapse:collapse; font-size:12.5px; }
   th, td{ border:1px solid var(--border); padding:5px 6px; text-align:center; }
   th{ background:var(--panel2); }
+  th.wd-label{ font-size:28px; padding:8px 6px; }
   td.cell{ cursor:pointer; min-width:54px; height:34px; }
   td.cell.busy{ background:var(--accent-dim); }
   td.cell.editing input{ width:100%; padding:2px; }
@@ -136,6 +137,11 @@
         <input type="number" id="maxBlockPeriods" min="1" max="8" style="width:70px">
       </div>
       <div class="hint">같은 교사가 같은 과목·반으로 연이어 수업하면(예: 실습 2시간 연속) 교체를 교시 하나하나가 아니라 이 수만큼 묶어서 한 명에게 통째로 찾습니다. 묶음이 이보다 길면 앞에서부터 이 수만큼씩 잘라 여러 묶음으로 나눕니다. 기본 2.</div>
+      <div class="field" style="margin-top:10px">
+        <label>교시별 시작~종료 시각(모든 요일 공통)</label>
+        <div id="periodTimesRow" style="overflow-x:auto"></div>
+      </div>
+      <div class="hint">여기 넣은 시각이 시간표·추천 화면의 교시 번호 옆에 그대로 표시됩니다.</div>
     </div>
     <div class="card">
       <div class="toolbar">
@@ -343,7 +349,12 @@ const JSDAY_FOR_INDEX = [1,2,3,4,5]; // Date.getDay(): 0=일 ... 6=토. 월=1..�
 
 function defaultState(){
   return {
-    settings: { periodsByDay: [7,7,7,7,7], excludedSubjects: ['창체'], maxBlockPeriods: 2 }, // 월~금 요일별 교시 수, 제외 과목명, 연속 수업 묶음 최대 교시
+    settings: {
+      periodsByDay: [7,7,7,7,7], excludedSubjects: ['창체'], maxBlockPeriods: 2,
+      // 교시별 실제 시작~종료 시각(모든 요일 공통). 화면에 표시되는 "오늘 시간표"를 그대로 기본값으로 넣어둠 — 다르면 설정에서 고치면 됨.
+      periodTimes: { 1:{start:'08:50',end:'09:40'}, 2:{start:'09:50',end:'10:40'}, 3:{start:'10:50',end:'11:40'},
+        4:{start:'11:50',end:'12:40'}, 5:{start:'13:30',end:'14:20'}, 6:{start:'14:30',end:'15:20'} }
+    }, // 월~금 요일별 교시 수, 제외 과목명, 연속 수업 묶음 최대 교시, 교시별 시각
     teachers: [],   // {id, name, subject, specialized, specialtyGroup, excluded:[id,...]}
     timetable: {},  // teacherId -> { "w-p": {subject, className} }
     trips: []       // {id, teacherId, title, dateFrom, dateTo, excludedExtra:[id], affected:[{date,w,p}], decisions:[...], createdAt}
@@ -468,9 +479,19 @@ function matchSlot(slot, teacherId, date, w, p){
   return !!slot && slot.teacherId===teacherId && slot.date===date && slot.w===w && slot.p===p;
 }
 // 연속 교시 블록([2,3,4] 등)을 "2~4교시"처럼, 한 교시면 "2교시"처럼 표시한다.
+// 교시 번호에 설정해둔 실제 시작~종료 시각을 "(08:50~09:40)"처럼 돌려준다. 설정 안 돼 있으면 빈 문자열.
+function periodTimeLabel(p){
+  const t = state.settings.periodTimes && state.settings.periodTimes[p];
+  return t ? ` (${t.start}~${t.end})` : '';
+}
 function periodRangeLabel(periods){
   if(!periods || periods.length===0) return '';
-  return periods.length===1 ? `${periods[0]}교시` : `${periods[0]}~${periods[periods.length-1]}교시`;
+  if(periods.length===1) return `${periods[0]}교시${periodTimeLabel(periods[0])}`;
+  const first = periods[0], last = periods[periods.length-1];
+  const t1 = state.settings.periodTimes && state.settings.periodTimes[first];
+  const t2 = state.settings.periodTimes && state.settings.periodTimes[last];
+  const timePart = (t1 && t2) ? ` (${t1.start}~${t2.end})` : '';
+  return `${first}~${last}교시${timePart}`;
 }
 // 결정 하나와 같은 블록(blockId)에 속한 모든 결정을 교시 순으로 모아 돌려준다(없으면 자기 자신만).
 function decisionsInBlock(trip, dec){
@@ -858,9 +879,9 @@ function renderTeachers(){
     const blockedWrap = body.querySelector('.f-blocked');
     {
       const periods = maxPeriods();
-      let bHtml = '<table><tr><th></th>' + WEEKDAY_LABELS.map(wl=>`<th>${wl}</th>`).join('') + '</tr>';
+      let bHtml = '<table><tr><th></th>' + WEEKDAY_LABELS.map(wl=>`<th class="wd-label">${wl}</th>`).join('') + '</tr>';
       for(let p=1; p<=periods; p++){
-        bHtml += `<tr><th>${p}</th>`;
+        bHtml += `<tr><th style="font-size:12px">${p}교시<br><span class="muted" style="font-weight:normal">${(state.settings.periodTimes&&state.settings.periodTimes[p])?state.settings.periodTimes[p].start+"~"+state.settings.periodTimes[p].end:""}</span></th>`;
         for(let w=0; w<5; w++){
           if(p > periodsFor(w)){ bHtml += '<td></td>'; continue; }
           const checked = (t.blockedSlots||[]).includes(slotKey(w,p));
@@ -965,6 +986,7 @@ function renderPeriodsByDay(){
         state.settings.periodsByDay[w] = v;
         saveState();
         renderTimetableEditGrid();
+        renderPeriodTimes();
       }
     });
   });
@@ -983,8 +1005,37 @@ document.getElementById('excludedSubjects').addEventListener('change', e=>{
 document.getElementById('maxBlockPeriods').value = state.settings.maxBlockPeriods;
 document.getElementById('maxBlockPeriods').addEventListener('change', e=>{
   const v = parseInt(e.target.value,10);
-  if(v>0){ state.settings.maxBlockPeriods = v; saveState(); }
+  if(v>0){ state.settings.maxBlockPeriods = v; saveState(); renderPeriodTimes(); }
 });
+
+function renderPeriodTimes(){
+  const wrap = document.getElementById('periodTimesRow');
+  if(!state.settings.periodTimes) state.settings.periodTimes = {};
+  const periods = maxPeriods();
+  let html = '<table><tr><th></th>' + Array.from({length:periods},(_,i)=>i+1).map(p=>`<th>${p}교시</th>`).join('') + '</tr><tr><th>시작</th>';
+  for(let p=1;p<=periods;p++){
+    const t = state.settings.periodTimes[p] || {};
+    html += `<td><input type="time" class="f-ptime-start" data-p="${p}" value="${t.start||''}" style="width:100px"></td>`;
+  }
+  html += '</tr><tr><th>종료</th>';
+  for(let p=1;p<=periods;p++){
+    const t = state.settings.periodTimes[p] || {};
+    html += `<td><input type="time" class="f-ptime-end" data-p="${p}" value="${t.end||''}" style="width:100px"></td>`;
+  }
+  html += '</tr></table>';
+  wrap.innerHTML = html;
+  wrap.querySelectorAll('.f-ptime-start, .f-ptime-end').forEach(input=>{
+    input.addEventListener('change', ()=>{
+      const p = input.dataset.p;
+      if(!state.settings.periodTimes[p]) state.settings.periodTimes[p] = {start:'', end:''};
+      if(input.classList.contains('f-ptime-start')) state.settings.periodTimes[p].start = input.value;
+      else state.settings.periodTimes[p].end = input.value;
+      saveState();
+      renderTimetableEditGrid(); renderTrips();
+    });
+  });
+}
+renderPeriodTimes();
 function isExcludedSubject(subject){
   return (state.settings.excludedSubjects||[]).includes(String(subject||'').trim());
 }
@@ -1283,9 +1334,9 @@ function renderTimetableEditGrid(){
   if(viewDate){ renderDateSpecificView(teacherId, viewDate); return; }
   hintEl.textContent = '';
   const periods = maxPeriods();
-  let html = '<table><tr><th></th>' + WEEKDAY_LABELS.map(w=>`<th>${w}</th>`).join('') + '</tr>';
+  let html = '<table><tr><th></th>' + WEEKDAY_LABELS.map(w=>`<th class="wd-label">${w}</th>`).join('') + '</tr>';
   for(let p=1;p<=periods;p++){
-    html += `<tr><th>${p}교시</th>`;
+    html += `<tr><th style="font-size:12px">${p}교시<br><span class="muted" style="font-weight:normal">${(state.settings.periodTimes&&state.settings.periodTimes[p])?state.settings.periodTimes[p].start+"~"+state.settings.periodTimes[p].end:""}</span></th>`;
     for(let w=0;w<5;w++){
       if(p > periodsFor(w)){
         html += `<td class="cell" style="background:var(--panel2);cursor:default;color:var(--text-dim)">–</td>`;
@@ -1343,7 +1394,7 @@ function renderDateSpecificView(teacherId, dateStr){
       inner = '';
     }
     const highlight = vacated || changedCover;
-    html += `<tr><th>${p}교시</th><td class="cell ${eff?'busy':''}" ${highlight?'style="background:var(--warn)"':''}>${inner}</td></tr>`;
+    html += `<tr><th style="font-size:12px">${p}교시<br><span class="muted" style="font-weight:normal">${(state.settings.periodTimes&&state.settings.periodTimes[p])?state.settings.periodTimes[p].start+"~"+state.settings.periodTimes[p].end:""}</span></th><td class="cell ${eff?'busy':''}" ${highlight?'style="background:var(--warn)"':''}>${inner}</td></tr>`;
   }
   html += '</table>';
   wrap.innerHTML = html;
@@ -1858,6 +1909,7 @@ function josaWa(word){
 
 function renderAll(){
   renderPeriodsByDay();
+  renderPeriodTimes();
   renderTeachers();
   renderAllSelects();
   renderTimetableEditGrid();
