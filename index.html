@@ -626,15 +626,28 @@ function buildTeacherView(teacherId){
     }
   }
   decisions.sort((a,b)=> a.date.localeCompare(b.date));
-  // 이 선생님 본인 출장 중 아직 미확정인 교시들 + 추천 후보. "교사가 직접 교체를 요청"하는 화면에
-  // 쓰이는데, 다른 교사 정보 노출을 최소화하려고 후보의 "이름·맞교체 날짜"만 담고 전체 시간표나
-  // 다른 출장 내역 같은 건 절대 넣지 않는다.
-  const pendingSlots = [];
+  // 이 선생님 본인 출장 목록 — 관리자 화면의 "등록된 출장" 카드와 같은 모양(교시마다 확정/미확정
+  // 상태 + 확정된 건 되돌리기, 미확정인 건 추천 후보)으로 보여주기 위한 데이터. 다른 교사 노출을
+  // 최소화하려고 후보의 "이름·맞교체 날짜"만 담고, 그 교사의 전체 시간표나 다른 출장 내역은
+  // 절대 넣지 않는다.
+  const myTrips = [];
   for(const trip of state.trips){
     if(trip.teacherId !== teacherId) continue;
     const results = recommendForTrip(trip, {expand:false});
-    for(const r of results){
-      if(r.decided) continue;
+    const slots = results.map(r=>{
+      if(r.decided){
+        const dec = r.decision;
+        const B = getTeacher(dec.covered.teacherId);
+        return {
+          decided: true,
+          date: r.slot.date, w: r.slot.w, periods: r.slot.periods,
+          mode: dec.mode, otherTeacherName: B ? B.name : '?',
+          reciprocalDate: dec.reciprocalVacated ? dec.reciprocalVacated.date : null,
+          reciprocalW: dec.reciprocalVacated ? dec.reciprocalVacated.w : null,
+          reciprocalP: dec.reciprocalVacated ? dec.reciprocalVacated.p : null,
+          blockId: dec.blockId || dec.id
+        };
+      }
       const candidates = r.candidates.slice(0,5).map(c=>{
         const B = getTeacher(c.teacherId);
         const top = c.partnerOptions[0] || null;
@@ -645,14 +658,20 @@ function buildTeacherView(teacherId){
           partnerBlock: top ? { date: top.date, w: top.w, periods: top.periods } : null
         };
       });
-      pendingSlots.push({
-        tripId: trip.id, tripTitle: trip.title || '',
+      return {
+        decided: false,
         date: r.slot.date, w: r.slot.w, periods: r.slot.periods,
         origSubject: r.baseCell ? r.baseCell.subject : '',
         candidates
-      });
-    }
+      };
+    });
+    myTrips.push({
+      id: trip.id, title: trip.title || '', dateFrom: trip.dateFrom, dateTo: trip.dateTo,
+      confirmedCount: slots.filter(s=>s.decided).length, totalCount: slots.length,
+      slots
+    });
   }
+  myTrips.sort((a,b)=> b.dateFrom.localeCompare(a.dateFrom));
   return {
     teacherName: t.name,
     teacherSubject: t.subject || '',
@@ -661,7 +680,7 @@ function buildTeacherView(teacherId){
     periodTimes: state.settings.periodTimes,
     timetable: state.timetable[teacherId] || {},
     decisions,
-    pendingSlots
+    myTrips
   };
 }
 function publishAllTeacherViews(){
@@ -1122,6 +1141,16 @@ function undoDecision(trip, decisionId){
   const groupKey = target.blockId || target.id;
   trip.decisions = (trip.decisions||[]).filter(d => (d.blockId || d.id) !== groupKey);
   saveState();
+}
+// undoDecision과 같은 일을 하지만, decisionId 대신 blockId를 바로 받는다 — 교사가 자기 출장의
+// "되돌리기"를 요청(classswap_requests, type:'undo')할 때, 어떤 decision id가 그 블록에 속하는지
+// 몰라도 되게(buildTeacherView가 이미 blockId만 내려줌) 하기 위함. 돌아갈 게 없으면 false.
+function undoDecisionBlock(trip, blockId){
+  const before = (trip.decisions||[]).length;
+  trip.decisions = (trip.decisions||[]).filter(d => (d.blockId || d.id) !== blockId);
+  if(trip.decisions.length === before) return false;
+  saveState();
+  return true;
 }
 
 /* =========================================================================
@@ -2569,6 +2598,20 @@ function requestNewTrip(dateFrom, dateTo, title, modeFilter, excludedExtra){
     alert('출장을 등록했습니다. 관리자 화면이 켜져 있으면 바로 처리되고, 꺼져 있으면 다음 접속 때 반영됩니다.');
   }).catch(err=>{ alert('등록 실패: ' + err.message); });
 }
+// 교사가 본인 출장의 확정된 교체를 스스로 되돌린다 — 관리자가 쓰던 "되돌리기"와 같은 효과를
+// 승인 없이 요청(classswap_requests, type:'undo')으로 보낸다.
+function requestUndo(tripId, blockId){
+  if(!myLinkedTeacherId || !currentUser) return;
+  if(!confirm('이 교체를 되돌릴까요? 관리자 화면이 켜져 있으면 바로 반영됩니다.')) return;
+  db.collection('classswap_requests').add({
+    type: 'undo',
+    teacherId: myLinkedTeacherId,
+    tripId, blockId,
+    status: 'pending',
+    requestedBy: currentUser.email,
+    requestedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(err=>{ alert('요청 실패: ' + err.message); });
+}
 function roleLabel(role){
   return { vacated:'출장(공강)', covered:'대체로 들어감', reciprocalVacated:'맞교체로 내 자리 비움', reciprocalCovered:'맞교체로 대신 들어감' }[role] || role;
 }
@@ -2599,29 +2642,42 @@ function renderTeacherView(view){
       }).join('') + '</table>';
   }
 
-  // 아직 미확정인 내 출장 교시들 + 추천 후보 — 후보를 골라 "요청하기"를 누르면 관리자 승인 대기로
-  // 들어간다. 이미 같은 교시에 대기 중인 요청이 있으면 후보 버튼 대신 대기 상태 + 취소 버튼만 보여준다.
-  let pendingHtml = '<div class="muted">현재 직접 처리할 미확정 교체가 없습니다.</div>';
-  if(view.pendingSlots && view.pendingSlots.length){
-    pendingHtml = view.pendingSlots.map(s=>{
-      const label = `${s.date} (${WEEKDAY_LABELS[s.w]}) ${s.periods.length>1 ? s.periods[0]+'~'+s.periods[s.periods.length-1]+'교시' : s.periods[0]+'교시'} — ${escapeHtml(s.origSubject||'')}${s.tripTitle?' · '+escapeHtml(s.tripTitle):''}`;
-      const myReq = myRequests.find(r=>r.tripId===s.tripId && r.date===s.date && r.w===s.w && JSON.stringify(r.periods)===JSON.stringify(s.periods));
-      let body;
-      if(myReq){
-        body = `<div class="hint" style="margin-top:4px">요청됨: <b>${escapeHtml(myReq.candidateName)}</b> 선생님(${myReq.mode==='swap'?'맞교체':'대체'}) — 관리자 승인 대기 중</div>
-          <button class="small danger btnCancelReq" data-req="${myReq.id}" style="margin-top:4px">요청 취소</button>`;
-      } else if(!s.candidates || s.candidates.length===0){
-        body = `<div class="muted">지금은 조건에 맞는 후보가 없습니다. 관리자에게 직접 문의하세요.</div>`;
-      } else {
-        body = s.candidates.map((c,i)=>{
-          const partnerTxt = c.partnerBlock ? ` ↔ ${c.partnerBlock.date}(${WEEKDAY_LABELS[c.partnerBlock.w]}) ${c.partnerBlock.periods.length>1 ? c.partnerBlock.periods[0]+'~'+c.partnerBlock.periods[c.partnerBlock.periods.length-1]+'교시' : c.partnerBlock.periods[0]+'교시'}` : '';
-          return `<button class="small btnReqCandidate" data-idx="${i}" style="margin:2px 4px 2px 0">${escapeHtml(c.candidateName)} 선생님 (${c.mode==='swap'?'맞교체':'대체'})${escapeHtml(partnerTxt)}</button>`;
-        }).join('');
-      }
-      return `<div class="card" style="background:var(--panel);margin-bottom:8px">
-        <div style="font-weight:600">${label}</div>
-        <div style="margin-top:6px" data-slot="${escapeHtml(JSON.stringify({tripId:s.tripId,date:s.date,w:s.w,periods:s.periods}))}">${body}</div>
-      </div>`;
+  // 내 출장 목록 — 관리자의 "등록된 출장" 카드와 같은 모양으로, 교시마다 확정(되돌리기 가능)/
+  // 미확정(후보 골라 요청) 상태를 그대로 보여준다. 다른 교사 노출은 최소화(후보 이름·맞교체
+  // 날짜만)하되, 본인 출장은 추가(새 출장 등록)·수정(되돌리고 다른 후보로 재요청)·삭제(되돌리기)를
+  // 전부 본인이 직접 할 수 있게 한다.
+  let myTripsHtml = '<div class="muted">등록된 출장이 없습니다. 위에서 새로 등록하세요.</div>';
+  if(view.myTrips && view.myTrips.length){
+    myTripsHtml = view.myTrips.map(trip=>{
+      const needsAttention = trip.confirmedCount < trip.totalCount;
+      const slotsHtml = (trip.slots||[]).map(s=>{
+        const label = `${s.date} (${WEEKDAY_LABELS[s.w]}) ${s.periods.length>1 ? s.periods[0]+'~'+s.periods[s.periods.length-1]+'교시' : s.periods[0]+'교시'}`;
+        if(s.decided){
+          const recip = s.reciprocalDate ? ` ↔ ${s.reciprocalDate}(${WEEKDAY_LABELS[s.reciprocalW]}) ${s.reciprocalP}교시` : '';
+          const modeLabel = s.mode==='swap' ? '맞교체' : s.mode==='merge' ? '합반 보강' : '대체';
+          return `<div class="slotrow"><div class="head"><div>${label}</div><div class="decided">확정: ${escapeHtml(s.otherTeacherName)} 선생님(${modeLabel})${escapeHtml(recip)}</div></div>
+            <div class="toolbar"><button class="small danger btnMyUndo" data-trip="${escapeAttr(trip.id)}" data-block="${escapeAttr(s.blockId)}">되돌리기</button></div></div>`;
+        }
+        const myReq = myRequests.find(r=>(r.type||'confirm')==='confirm' && r.tripId===trip.id && r.date===s.date && r.w===s.w && JSON.stringify(r.periods)===JSON.stringify(s.periods));
+        let body;
+        if(myReq){
+          body = `<div class="hint" style="margin-top:4px">요청됨: <b>${escapeHtml(myReq.candidateName)}</b> 선생님(${myReq.mode==='swap'?'맞교체':'대체'}) — 처리 대기 중</div>
+            <button class="small danger btnCancelReq" data-req="${myReq.id}" style="margin-top:4px">요청 취소</button>`;
+        } else if(!s.candidates || s.candidates.length===0){
+          body = `<div class="muted">지금은 조건에 맞는 후보가 없습니다. 관리자에게 직접 문의하세요.</div>`;
+        } else {
+          body = s.candidates.map((c,i)=>{
+            const partnerTxt = c.partnerBlock ? ` ↔ ${c.partnerBlock.date}(${WEEKDAY_LABELS[c.partnerBlock.w]}) ${c.partnerBlock.periods.length>1 ? c.partnerBlock.periods[0]+'~'+c.partnerBlock.periods[c.partnerBlock.periods.length-1]+'교시' : c.partnerBlock.periods[0]+'교시'}` : '';
+            return `<button class="small btnReqCandidate" data-idx="${i}" style="margin:2px 4px 2px 0">${escapeHtml(c.candidateName)} 선생님 (${c.mode==='swap'?'맞교체':'대체'})${escapeHtml(partnerTxt)}</button>`;
+          }).join('');
+        }
+        return `<div class="slotrow"><div class="head"><div>${label} — ${escapeHtml(s.origSubject||'')}</div></div>
+          <div style="margin-top:6px" data-slot="${escapeHtml(JSON.stringify({tripId:trip.id,date:s.date,w:s.w,periods:s.periods}))}">${body}</div></div>`;
+      }).join('') || '<div class="muted">영향받는 교시가 없습니다.</div>';
+      return `<details class="group-details" data-trip-id="${escapeAttr(trip.id)}" ${needsAttention?'open':''}>
+        <summary>${escapeHtml(trip.dateFrom)} ~ ${escapeHtml(trip.dateTo)} <span class="badge ${needsAttention?'warn':'ok'}">${trip.confirmedCount}/${trip.totalCount} 확정</span>${trip.title?` <span class="badge">${escapeHtml(trip.title)}</span>`:''}</summary>
+        <div class="body">${slotsHtml}</div>
+      </details>`;
     }).join('');
   }
 
@@ -2657,9 +2713,9 @@ function renderTeacherView(view){
       </div>
       <div class="toolbar" style="margin-top:10px"><button id="btnMyAddTrip" class="small primary">출장 등록</button></div>
     </div>
-    <div class="card"><h2>내 교체 요청</h2>
-      <div class="hint" style="margin-top:0">아래 후보 중 하나를 골라 "요청하기"를 누르면 관리자 승인 없이 자동으로 확정됩니다(관리자 로그인 화면이 어딘가 켜져 있어야 바로 반영되고, 꺼져 있으면 다음에 관리자가 접속할 때 반영됩니다). 후보 이름과 맞교체 날짜 외 다른 선생님 정보는 보이지 않습니다.</div>
-      ${pendingHtml}
+    <div class="card"><h2>내 출장 목록</h2>
+      <div class="hint" style="margin-top:0">본인이 등록했거나 관리자가 등록해준 출장입니다. 미확정 교시는 후보를 골라 "요청하기", 확정된 교시는 "되돌리기"를 누르면 — 둘 다 관리자 승인 없이, 관리자 로그인 화면이 어딘가 켜져 있을 때 바로 반영됩니다(꺼져 있으면 다음 접속 때 반영). 후보 이름·맞교체 날짜 외 다른 선생님 정보는 보이지 않습니다.</div>
+      ${myTripsHtml}
     </div>
     <div class="card"><h2>내 수업 변경 내역</h2><div style="overflow-x:auto">${historyHtml}</div></div>
   `;
@@ -2680,15 +2736,20 @@ function renderTeacherView(view){
   root.querySelectorAll('.btnReqCandidate').forEach(btn=>{
     const wrap = btn.closest('[data-slot]');
     const slotInfo = JSON.parse(wrap.dataset.slot);
-    const sObj = view.pendingSlots.find(s=>s.tripId===slotInfo.tripId && s.date===slotInfo.date && s.w===slotInfo.w && JSON.stringify(s.periods)===JSON.stringify(slotInfo.periods));
+    const trip = (view.myTrips||[]).find(t=>t.id===slotInfo.tripId);
+    const sObj = trip && trip.slots.find(s=>s.date===slotInfo.date && s.w===slotInfo.w && JSON.stringify(s.periods)===JSON.stringify(slotInfo.periods));
+    if(!sObj) return;
     const candidate = sObj.candidates[parseInt(btn.dataset.idx,10)];
     btn.addEventListener('click', ()=>{
-      if(!confirm(`${candidate.candidateName} 선생님(${candidate.mode==='swap'?'맞교체':'대체'})으로 요청할까요? 관리자 승인 후 확정됩니다.`)) return;
+      if(!confirm(`${candidate.candidateName} 선생님(${candidate.mode==='swap'?'맞교체':'대체'})으로 요청할까요? 관리자 승인 없이 자동으로 확정됩니다.`)) return;
       requestOwnDecision(slotInfo.tripId, { date: slotInfo.date, w: slotInfo.w, periods: slotInfo.periods }, candidate);
     });
   });
   root.querySelectorAll('.btnCancelReq').forEach(btn=>{
     btn.addEventListener('click', ()=>{ if(confirm('요청을 취소할까요?')) cancelOwnRequest(btn.dataset.req); });
+  });
+  root.querySelectorAll('.btnMyUndo').forEach(btn=>{
+    btn.addEventListener('click', ()=> requestUndo(btn.dataset.trip, btn.dataset.block));
   });
 }
 
@@ -2758,6 +2819,7 @@ function startRequestsListener(){
 function autoProcessRequests(){
   for(const r of allRequests){
     if(r.type === 'newTrip'){ processNewTripRequest(r); continue; }
+    if(r.type === 'undo'){ processUndoRequest(r); continue; }
     const trip = state.trips.find(t=>t.id===r.tripId);
     if(!trip){ db.collection('classswap_requests').doc(r.id).delete(); continue; }
     const slot = { date: r.date, w: r.w, periods: r.periods };
@@ -2778,6 +2840,14 @@ function processNewTripRequest(r){
   }
   createTripAndAutoAssign(r.teacherId, r.dateFrom, r.dateTo, r.title, r.modeFilter, r.excludedExtra);
   saveState();
+  db.collection('classswap_requests').doc(r.id).delete();
+  renderTrips(); renderHistory();
+}
+// 교사가 본인 출장의 확정된 교체를 "되돌려달라"고 올린 요청을 관리자 세션이 그대로 처리.
+function processUndoRequest(r){
+  const trip = state.trips.find(t=>t.id===r.tripId);
+  if(!trip || !r.blockId){ db.collection('classswap_requests').doc(r.id).delete(); return; }
+  undoDecisionBlock(trip, r.blockId); // 이미 없어졌어도(먼저 처리됐거나) 그냥 무해하게 넘어감
   db.collection('classswap_requests').doc(r.id).delete();
   renderTrips(); renderHistory();
 }
