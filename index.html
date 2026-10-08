@@ -240,7 +240,7 @@
 
   <!-- ================= 교사 관리 ================= -->
   <section class="panel active" id="panel-teachers">
-    <div class="card">
+    <div class="card" id="settingsCard">
       <h2>설정</h2>
       <div class="row" id="periodsByDayRow"></div>
       <div class="hint">요일마다 교시 수가 다르면 요일별로 따로 입력하세요(예: 금요일만 5교시). 교시 수보다 많은 칸은 시간표 화면에서 회색으로 비활성 처리됩니다.</div>
@@ -1170,6 +1170,7 @@ document.querySelectorAll('nav button').forEach(btn=>{
    ========================================================================= */
 function renderTeachers(){
   renderBulkSpecialized();
+  const isAdmin = myRole === 'admin';
   const wrap = document.getElementById('teacherList');
   if(state.teachers.length===0){
     wrap.innerHTML = '<div class="muted">등록된 교사가 없습니다. 위 "+ 새 교사" 또는 시간표 가져오기에서 자동으로 추가됩니다.</div>';
@@ -1327,6 +1328,12 @@ function renderTeachers(){
       saveState();
       renderTeachers(); renderAllSelects();
     });
+    // 교사(일반) 역할은 이 화면을 관리자와 똑같이 "보기"만 — 구조 데이터(과목·전문교과·제외·
+    // 배정불가)는 전체 매칭에 영향을 주므로 계속 관리자만 고칠 수 있다. 입력칸/버튼을 비활성화
+    // 하는 것만으로 충분 — 어차피 Firestore 규칙이 저장 자체를 막아준다(이중 안전장치).
+    if(!isAdmin){
+      body.querySelectorAll('input, select, textarea, button').forEach(el=> el.disabled = true);
+    }
   }
   }
 }
@@ -1824,12 +1831,16 @@ function renderTimetableEditGrid(){
   html += '</table>';
   wrap.innerHTML = html;
 
-  wrap.querySelectorAll('td.cell[data-w]').forEach(td=>{
-    td.addEventListener('click', ()=>{
-      const w = parseInt(td.dataset.w,10), p = parseInt(td.dataset.p,10);
-      openCellEditPanel(teacherId, w, p);
+  if(myRole === 'admin'){
+    wrap.querySelectorAll('td.cell[data-w]').forEach(td=>{
+      td.addEventListener('click', ()=>{
+        const w = parseInt(td.dataset.w,10), p = parseInt(td.dataset.p,10);
+        openCellEditPanel(teacherId, w, p);
+      });
     });
-  });
+  } else {
+    wrap.querySelectorAll('td.cell[data-w]').forEach(td=>{ td.style.cursor = 'default'; });
+  }
 }
 
 // 특정 날짜를 골랐을 때: 그 요일 하루치만, 확정된 출장·교체 내용까지 반영해서 보여준다(읽기 전용).
@@ -2002,6 +2013,13 @@ document.getElementById('btnAddTrip').addEventListener('click', ()=>{
   if(!teacherId){ alert('교사를 선택하세요.'); return; }
   if(!dateFrom || !dateTo || dateFrom > dateTo){ alert('기간을 올바르게 입력하세요.'); return; }
   const excludedExtra = Array.from(document.querySelectorAll('#tripExtraExclude input:checked')).map(i=>i.value);
+  // 교사(일반) 역할은 classswap/state에 직접 쓸 권한이 없다 — 요청으로 보내서 관리자 세션이
+  // (켜져 있을 때) 자동으로 등록해준다. 관리자는 그 자리에서 바로 등록.
+  if(myRole !== 'admin'){
+    requestNewTrip(dateFrom, dateTo, title, modeFilter, excludedExtra);
+    document.getElementById('tripTitle').value = '';
+    return;
+  }
   const { trip, assigned, skipped } = createTripAndAutoAssign(teacherId, dateFrom, dateTo, title, modeFilter, excludedExtra);
   saveState();
   document.getElementById('tripTitle').value = '';
@@ -2018,8 +2036,13 @@ function renderTrips(){
   const openIds = new Set(Array.from(wrap.querySelectorAll('details[open]')).map(d=>d.dataset.tripId));
   wrap.innerHTML = '';
   if(state.trips.length===0){ wrap.innerHTML = '<div class="muted">등록된 출장이 없습니다.</div>'; return; }
+  const isAdmin = myRole === 'admin';
   for(const trip of [...state.trips].sort((a,b)=> b.createdAt.localeCompare(a.createdAt))){
     const A = getTeacher(trip.teacherId);
+    // 교사(일반)는 본인 출장 건에 한해서만 요청(승인 없이 자동 처리)으로 액션할 수 있다 — 다른
+    // 교사 출장은 관리자와 "똑같이 보이긴" 하지만 조회만 가능(버튼 자체를 숨김).
+    const isMine = !isAdmin && myLinkedTeacherId && trip.teacherId === myLinkedTeacherId;
+    const canAct = isAdmin || isMine;
     const done = new Set((trip.decisions||[]).map(d => d.blockId || d.id)).size; // 블록(교시 묶음) 단위로 센다 — 교시 수가 아니라
     const total = trip.affected.length;
     const det = document.createElement('details');
@@ -2028,27 +2051,27 @@ function renderTrips(){
     const summary = document.createElement('summary');
     summary.innerHTML = `${escapeHtml(A?A.name:'(삭제된 교사)')} <span class="badge">${trip.dateFrom} ~ ${trip.dateTo}</span>` +
       `<span class="badge ${done===total?'ok':''}">${done}/${total} 확정</span>` +
-      (trip.title?`<span class="badge">${escapeHtml(trip.title)}</span>`:'');
+      (trip.title?`<span class="badge">${escapeHtml(trip.title)}</span>`:'') +
+      (isMine ? ' <span class="badge spec">내 출장</span>' : '');
     det.appendChild(summary);
     const body = document.createElement('div');
     body.className = 'body';
     body.innerHTML = `
       <div class="toolbar">
-        <button class="btnAutoAssign small primary">남은 교시 전체 자동 배정</button>
+        ${isAdmin ? '<button class="btnAutoAssign small primary">남은 교시 전체 자동 배정</button>' : ''}
         <button class="btnRecommend small">추천 다시 보기</button>
         <label style="display:flex;align-items:center;gap:6px">교체 방식
-          <select class="selModeFilter">
+          <select class="selModeFilter" ${isAdmin?'':'disabled'}>
             <option value="all">맞교체+대체 모두</option>
             <option value="swap">맞교체만</option>
             <option value="cover">대체(보강)만</option>
           </select>
         </label>
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 더 넓게(전후 3주) 찾기</label>
-        <button class="btnUndoAll small danger" style="margin-left:auto">전체 되돌리기(새로 구성)</button>
-        <button class="btnDeleteTrip small danger">출장 삭제</button>
+        ${isAdmin ? '<button class="btnUndoAll small danger" style="margin-left:auto">전체 되돌리기(새로 구성)</button><button class="btnDeleteTrip small danger">출장 삭제</button>' : ''}
       </div>
-      <div class="hint">자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.</div>
-      <div class="card" style="background:var(--panel);margin-top:10px">
+      <div class="hint">${isAdmin ? '자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.' : isMine ? '아래 후보 중 하나를 골라 요청하거나 확정된 걸 되돌리면, 관리자 승인 없이(관리자 화면이 켜져 있을 때) 자동으로 반영됩니다.' : '다른 선생님 출장입니다 — 조회만 가능합니다.'}</div>
+      ${isAdmin ? `<div class="card" style="background:var(--panel);margin-top:10px">
         <div style="font-weight:600;margin-bottom:6px">이미 정해진 교사로 일괄 배정</div>
         <div class="hint" style="margin-top:0">장기 병휴가처럼 "이 요일 이 교시는 OO 선생님이 계속 대신한다"가 이미 정해져 있을 때, 추천을 거치지 않고 아직 확정 안 된 교시들에 한 번에 단순 대체로 지정합니다. 이렇게 지정해두면 다른 출장 건을 등록할 때도 그 선생님이 이 시간엔 이미 바쁜 것으로 정확히 반영됩니다.</div>
         <div class="row" style="align-items:flex-end;margin-top:6px">
@@ -2062,15 +2085,35 @@ function renderTrips(){
           <div class="field"><label>적용할 교시(선택)</label><input type="number" class="fixedPeriod" min="1" style="width:80px" placeholder="비우면 전체"></div>
           <button class="btnFixedAssign small primary">미확정 교시 일괄 배정</button>
         </div>
-      </div>
+      </div>` : ''}
       <div class="recoWrap"></div>
     `;
     det.appendChild(body);
     wrap.appendChild(det);
     body.querySelector('.selModeFilter').value = trip.modeFilter || 'all';
-    body.querySelector('.fixedTeacher').innerHTML = state.teachers
-      .filter(t=>t.id!==trip.teacherId)
-      .map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+    if(isAdmin){
+      body.querySelector('.fixedTeacher').innerHTML = state.teachers
+        .filter(t=>t.id!==trip.teacherId)
+        .map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+    }
+
+    // 관리자는 바로 confirmDecision/undoDecision(직접 저장), 교사는 본인 출장일 때만 요청으로
+    // 보낸다(자동 처리, 서버 쓰기는 관리자 세션이 대신). 둘 다 아니면(다른 교사 출장) 호출 자체가
+    // 안 되게 버튼을 안 그린다.
+    const doConfirm = (slot, teacherId, teacherName, partnerBlock, mode)=>{
+      if(isAdmin){
+        if(confirmDecision(trip, slot, teacherId, partnerBlock, mode)){ renderReco(); renderTrips(); renderHistory(); }
+      } else if(isMine){
+        requestOwnDecision(trip.id, slot, { candidateTeacherId: teacherId, candidateName: teacherName, mode, partnerBlock: partnerBlock||null });
+      }
+    };
+    const doUndo = (dec)=>{
+      if(isAdmin){
+        undoDecision(trip, dec.id); renderReco(); renderTrips(); renderHistory();
+      } else if(isMine){
+        requestUndo(trip.id, dec.blockId || dec.id);
+      }
+    };
 
     const renderReco = ()=>{
       const expand = body.querySelector('.chkExpand').checked;
@@ -2095,8 +2138,8 @@ function renderTrips(){
             decText = `${escapeHtml(B?B.name:'?')} 선생님과 맞교체 ↔ ${dec.reciprocalVacated.date}(${WEEKDAY_LABELS[dec.reciprocalVacated.w]}) ${periodRangeLabel(rPeriods)}`;
           }
           else decText = `${escapeHtml(B?B.name:'?')} 선생님 (단순 대체)`;
-          row.innerHTML = `<div class="head"><div>${label}</div><div class="decided">확정: ${decText}</div></div><div class="toolbar"><button class="btnUndo small danger">되돌리기</button></div>`;
-          row.querySelector('.btnUndo').addEventListener('click', ()=>{ undoDecision(trip, dec.id); renderReco(); renderTrips(); renderHistory(); });
+          row.innerHTML = `<div class="head"><div>${label}</div><div class="decided">확정: ${decText}</div></div><div class="toolbar">${canAct?'<button class="btnUndo small danger">되돌리기</button>':''}</div>`;
+          if(canAct) row.querySelector('.btnUndo').addEventListener('click', ()=> doUndo(dec));
         } else {
           let candHtml = '';
           if(r.candidates.length===0){
@@ -2108,8 +2151,8 @@ function renderTrips(){
           row.innerHTML = `<div class="head"><div>${label}${splitBadge}</div></div><div class="candlist"></div>${candHtml}
             <div class="candlistRelaxed"></div>
             <div class="toolbar">
-              ${isSplitSlot ? '' : '<button class="btnRelaxed small">교환 안 되면 보강 후보 찾기(전문교과 제한 없이)</button>'}
-              <button class="btnManual small">직접 지정</button>
+              ${(isAdmin && !isSplitSlot) ? '<button class="btnRelaxed small">교환 안 되면 보강 후보 찾기(전문교과 제한 없이)</button>' : ''}
+              ${isAdmin ? '<button class="btnManual small">직접 지정</button>' : ''}
             </div>`;
           const cl = row.querySelector('.candlist');
           r.candidates.slice(0,6).forEach(c=>{
@@ -2119,31 +2162,27 @@ function renderTrips(){
             if(c.mode==='merge'){
               cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> <span class="badge spec">분반 합반 보강</span>` +
                 (c.alreadyMerged>0 ? ` <span class="badge warn">이미 ${c.alreadyMerged}개 분반 합쳐짐</span>` : '') +
-                `</div><div class="opt"><button class="btnPick small primary">이 반과 합쳐서 보강 확정</button></div>`;
-              cand.querySelector('.btnPick').addEventListener('click', ()=>{
-                if(confirmDecision(trip, r.slot, c.teacherId, null, 'merge')){ renderReco(); renderTrips(); renderHistory(); }
-              });
+                (canAct ? `</div><div class="opt"><button class="btnPick small primary">이 반과 합쳐서 보강 확정</button></div>` : '</div>');
+              if(canAct) cand.querySelector('.btnPick').addEventListener('click', ()=> doConfirm(r.slot, c.teacherId, B.name, null, 'merge'));
             } else if(c.mode==='cover'){
-              cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> <span class="badge warn">맞교체 상대 없음(단순 대체만 가능)</span></div>
-                <div class="opt"><button class="btnPick small primary">이 교사로 단순 대체 확정</button></div>`;
-              cand.querySelector('.btnPick').addEventListener('click', ()=>{
-                if(confirmDecision(trip, r.slot, c.teacherId, null, 'cover')){ renderReco(); renderTrips(); renderHistory(); }
-              });
+              cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> <span class="badge warn">맞교체 상대 없음(단순 대체만 가능)</span></div>` +
+                (canAct ? `<div class="opt"><button class="btnPick small primary">이 교사로 단순 대체 확정</button></div>` : '');
+              if(canAct) cand.querySelector('.btnPick').addEventListener('click', ()=> doConfirm(r.slot, c.teacherId, B.name, null, 'cover'));
             } else {
               cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> <span class="badge ok">맞교체 가능 ${c.partnerOptions.length}건</span></div>`;
-              const optWrap = document.createElement('div');
-              optWrap.className = 'opt';
-              c.partnerOptions.slice(0,3).forEach(opt=>{
-                const b = document.createElement('button');
-                b.className = 'small';
-                const timingLabel = opt.timing==='before' ? ' [출장 전]' : ' [출장 후]';
-                b.textContent = `${opt.date}(${WEEKDAY_LABELS[opt.w]}) ${periodRangeLabel(opt.periods)}${timingLabel}와 교체`;
-                b.addEventListener('click', ()=>{
-                  if(confirmDecision(trip, r.slot, c.teacherId, opt, 'swap')){ renderReco(); renderTrips(); renderHistory(); }
+              if(canAct){
+                const optWrap = document.createElement('div');
+                optWrap.className = 'opt';
+                c.partnerOptions.slice(0,3).forEach(opt=>{
+                  const b = document.createElement('button');
+                  b.className = 'small';
+                  const timingLabel = opt.timing==='before' ? ' [출장 전]' : ' [출장 후]';
+                  b.textContent = `${opt.date}(${WEEKDAY_LABELS[opt.w]}) ${periodRangeLabel(opt.periods)}${timingLabel}와 교체`;
+                  b.addEventListener('click', ()=> doConfirm(r.slot, c.teacherId, B.name, opt, 'swap'));
+                  optWrap.appendChild(b);
                 });
-                optWrap.appendChild(b);
-              });
-              cand.appendChild(optWrap);
+                cand.appendChild(optWrap);
+              }
             }
             cl.appendChild(cand);
           });
@@ -2168,7 +2207,8 @@ function renderTrips(){
               });
             });
           }
-          row.querySelector('.btnManual').addEventListener('click', ()=>{ openManualAssign(trip, r.slot, renderReco); });
+          const btnManual = row.querySelector('.btnManual');
+          if(btnManual) btnManual.addEventListener('click', ()=>{ openManualAssign(trip, r.slot, renderReco); });
         }
         rw.appendChild(row);
       }
@@ -2178,46 +2218,48 @@ function renderTrips(){
     body.querySelector('.chkExpand').addEventListener('change', renderReco);
     body.querySelector('.selModeFilter').addEventListener('change', e=>{
       trip.modeFilter = e.target.value;
-      saveState();
+      if(isAdmin) saveState();
       renderReco();
     });
-    body.querySelector('.btnAutoAssign').addEventListener('click', ()=>{
-      const expand = body.querySelector('.chkExpand').checked;
-      const { assigned, skipped } = autoAssignTrip(trip, {expand});
-      saveState();
-      renderReco(); renderTrips(); renderHistory();
-      let msg = `${assigned}건 자동 배정 완료.`;
-      if(skipped>0) msg += ` ${skipped}건은 조건에 맞는 후보가 없어 건너뛰었습니다(아래에서 직접 지정 가능).`;
-      alert(msg);
-    });
-    body.querySelector('.btnFixedAssign').addEventListener('click', ()=>{
-      const teacherId = body.querySelector('.fixedTeacher').value;
-      if(!teacherId){ alert('대체할 교사를 먼저 등록하세요.'); return; }
-      const wVal = body.querySelector('.fixedWeekday').value;
-      const weekdayFilter = wVal==='' ? null : parseInt(wVal,10);
-      const pVal = body.querySelector('.fixedPeriod').value.trim();
-      const periodFilter = pVal ? parseInt(pVal,10) : null;
-      if(isExcludedPair(trip.teacherId, teacherId, trip)){
-        if(!confirm('이 교사는 제외 설정되어 있습니다. 그래도 일괄 배정할까요?')) return;
-      }
-      const { assigned, skipped } = bulkAssignFixedTeacher(trip, teacherId, weekdayFilter, periodFilter);
-      renderReco(); renderTrips(); renderHistory();
-      alert(`${assigned}건을 지정한 교사로 일괄 배정했습니다.` + (skipped>0 ? ` (이미 확정됐거나 조건에 안 맞는 ${skipped}건은 건너뜀)` : ''));
-    });
-    body.querySelector('.btnUndoAll').addEventListener('click', ()=>{
-      const count = new Set((trip.decisions||[]).map(d=>d.blockId||d.id)).size;
-      if(count===0){ alert('아직 확정된 교체가 없습니다.'); return; }
-      if(!confirm(`이 출장의 확정된 교체 ${count}건을 전부 되돌릴까요? 출장 자체(교사·기간·사유 등)는 그대로 남고, 교체만 다시 처음부터 구성할 수 있게 됩니다.`)) return;
-      trip.decisions = [];
-      saveState();
-      renderReco(); renderTrips(); renderHistory();
-    });
-    body.querySelector('.btnDeleteTrip').addEventListener('click', ()=>{
-      if(!confirm('이 출장과 관련 교체 계획을 삭제할까요? 이미 확정된 교체도 함께 취소됩니다.')) return;
-      state.trips = state.trips.filter(x=>x.id!==trip.id);
-      saveState();
-      renderTrips(); renderHistory();
-    });
+    if(isAdmin){
+      body.querySelector('.btnAutoAssign').addEventListener('click', ()=>{
+        const expand = body.querySelector('.chkExpand').checked;
+        const { assigned, skipped } = autoAssignTrip(trip, {expand});
+        saveState();
+        renderReco(); renderTrips(); renderHistory();
+        let msg = `${assigned}건 자동 배정 완료.`;
+        if(skipped>0) msg += ` ${skipped}건은 조건에 맞는 후보가 없어 건너뛰었습니다(아래에서 직접 지정 가능).`;
+        alert(msg);
+      });
+      body.querySelector('.btnFixedAssign').addEventListener('click', ()=>{
+        const teacherId = body.querySelector('.fixedTeacher').value;
+        if(!teacherId){ alert('대체할 교사를 먼저 등록하세요.'); return; }
+        const wVal = body.querySelector('.fixedWeekday').value;
+        const weekdayFilter = wVal==='' ? null : parseInt(wVal,10);
+        const pVal = body.querySelector('.fixedPeriod').value.trim();
+        const periodFilter = pVal ? parseInt(pVal,10) : null;
+        if(isExcludedPair(trip.teacherId, teacherId, trip)){
+          if(!confirm('이 교사는 제외 설정되어 있습니다. 그래도 일괄 배정할까요?')) return;
+        }
+        const { assigned, skipped } = bulkAssignFixedTeacher(trip, teacherId, weekdayFilter, periodFilter);
+        renderReco(); renderTrips(); renderHistory();
+        alert(`${assigned}건을 지정한 교사로 일괄 배정했습니다.` + (skipped>0 ? ` (이미 확정됐거나 조건에 안 맞는 ${skipped}건은 건너뜀)` : ''));
+      });
+      body.querySelector('.btnUndoAll').addEventListener('click', ()=>{
+        const count = new Set((trip.decisions||[]).map(d=>d.blockId||d.id)).size;
+        if(count===0){ alert('아직 확정된 교체가 없습니다.'); return; }
+        if(!confirm(`이 출장의 확정된 교체 ${count}건을 전부 되돌릴까요? 출장 자체(교사·기간·사유 등)는 그대로 남고, 교체만 다시 처음부터 구성할 수 있게 됩니다.`)) return;
+        trip.decisions = [];
+        saveState();
+        renderReco(); renderTrips(); renderHistory();
+      });
+      body.querySelector('.btnDeleteTrip').addEventListener('click', ()=>{
+        if(!confirm('이 출장과 관련 교체 계획을 삭제할까요? 이미 확정된 교체도 함께 취소됩니다.')) return;
+        state.trips = state.trips.filter(x=>x.id!==trip.id);
+        saveState();
+        renderTrips(); renderHistory();
+      });
+    }
   }
   lastCreatedTripId = null; // 한 번 펼쳐 보여줬으면 그 다음부터는 사용자가 접고 펴는 대로 둔다
 }
@@ -2381,6 +2423,17 @@ function renderAllSelects(){
     sel.innerHTML = '<option value="">선택</option>' + state.teachers.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
     if(state.teachers.some(t=>t.id===prev)) sel.value = prev;
   }
+  // 교사(일반) 역할은 "새 출장 등록"을 본인 이름으로만 할 수 있다 — 다른 교사를 골라 출장을
+  // 등록하는 건 관리자만. 드롭다운을 본인 하나로 고정해서 실수로 남 이름으로 등록 못 하게 막는다.
+  if(myRole !== 'admin' && myLinkedTeacherId){
+    const tripSel = document.getElementById('tripTeacher');
+    const me = getTeacher(myLinkedTeacherId);
+    if(me){
+      tripSel.innerHTML = `<option value="${me.id}">${escapeHtml(me.name)} 선생님 (본인)</option>`;
+      tripSel.value = me.id;
+      tripSel.disabled = true;
+    }
+  }
   renderTripExtraExclude();
 }
 function escapeHtml(s){
@@ -2415,6 +2468,25 @@ function renderAll(){
   // 먼저 그려져서 빈 채로 남는 경우가 있었다 — state가 갱신될 때마다 이 드롭다운도 같이 최신화.
   const newTeacherSel = document.getElementById('newApprovedTeacher');
   if(newTeacherSel) fillTeacherSelect(newTeacherSel, newTeacherSel.value);
+  applyTeacherReadOnlyMode();
+}
+// 교사(일반) 역할은 관리자와 "똑같은 화면"을 보되, 구조 데이터(설정·교사 명단·시간표 가져오기)는
+// 계속 관리자만 고칠 수 있다 — 입력칸을 비활성화해서 UI에서부터 명확히 보여준다(실제 안전장치는
+// Firestore 규칙). renderAll()마다 다시 그려지는 요소들이 있어서 매번 새로 적용한다.
+function applyTeacherReadOnlyMode(){
+  if(myRole === 'admin') return;
+  const disableIds = [
+    'btnAddTeacher','btnImportState','btnResetAll','schoolYearInput',
+    'pasteArea','btnParsePaste','fileImportXlsx','btnRemap','btnCommitImport'
+  ];
+  for(const id of disableIds){
+    const el = document.getElementById(id);
+    if(el) el.disabled = true;
+  }
+  const settingsCard = document.getElementById('settingsCard');
+  if(settingsCard) settingsCard.querySelectorAll('input, select, button').forEach(el=> el.disabled = true);
+  const bulkWrap = document.getElementById('bulkSpecializedList');
+  if(bulkWrap) bulkWrap.querySelectorAll('input, select, button').forEach(el=> el.disabled = true);
 }
 
 /* =========================================================================
@@ -2782,24 +2854,29 @@ auth.onAuthStateChanged(async user=>{
   document.getElementById('userInfo').style.display = '';
   document.getElementById('userEmailText').textContent = `${user.email} (${myRole==='admin'?'관리자':'교사 보기'})`;
 
+  // "관리자" 탭(승인 이메일 관리)만 역할로 숨긴다 — 나머지(교사 관리/시간표/출장·교체 계획/교체
+  // 내역)는 교사(일반)도 관리자와 똑같은 화면을 그대로 본다. 실제 쓰기는 여전히 Firestore 규칙이
+  // 관리자만 허용해서, 교사가 액션을 누르면 본인 출장 건에 한해 요청(classswap_requests)으로
+  // 들어가고(자동 처리), 그 외에는 버튼 자체를 안 보여준다.
+  const adminTabBtn = document.querySelector('nav button[data-tab="admin"]');
+  if(adminTabBtn) adminTabBtn.style.display = (myRole==='admin') ? '' : 'none';
+  document.getElementById('appShell').style.display = '';
+  document.getElementById('teacherViewRoot').style.display = 'none';
   if(myRole === 'admin'){
-    document.getElementById('appShell').style.display = '';
-    document.getElementById('teacherViewRoot').style.display = 'none';
     startStateListener();
     startRequestsListener();
     startLoginAttemptsListener();
     renderApprovedEmails();
   } else {
-    document.getElementById('appShell').style.display = 'none';
-    document.getElementById('teacherViewRoot').style.display = '';
     if(!myLinkedTeacherId){
+      document.getElementById('appShell').style.display = 'none';
+      document.getElementById('teacherViewRoot').style.display = '';
       document.getElementById('teacherViewRoot').innerHTML = '<div class="card"><p>관리자가 아직 이 계정을 교사와 연결하지 않았습니다. 관리자에게 문의하세요.</p></div>';
       showGate('app');
       return;
     }
-    startTeacherViewListener(myLinkedTeacherId);
+    startStateListener();
     startMyRequestsListener(myLinkedTeacherId);
-    fetchPublicTeacherList();
   }
 });
 
