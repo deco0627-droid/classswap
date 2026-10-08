@@ -117,6 +117,11 @@
 </style>
 </head>
 <body>
+  <div id="legacyDataBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:1000;background:var(--warn);color:#111;padding:10px 16px;text-align:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)">
+    이 브라우저에 예전 데이터가 남아있는 걸 찾았습니다(로그인 전에 쓰던 버전).
+    <button id="btnDownloadLegacy" class="small primary" style="margin-left:8px">JSON으로 다운로드</button>
+    <button id="btnDismissLegacyBanner" class="small" style="margin-left:4px">닫기</button>
+  </div>
   <div id="loadingOverlay">
     <svg width="96" height="96" viewBox="0 0 100 100" aria-hidden="true">
       <circle cx="50" cy="52" r="34" fill="#F8F1E4"/>
@@ -409,6 +414,31 @@
 </main>
 
 <script>
+// Firebase 로그인 도입 전 이 브라우저에 저장돼 있던 이전 데이터를 찾아서 다운로드할 수 있게
+// 해주는 배너. 로그인·Firebase 초기화와 전혀 무관하게(심지어 file:// 로 열어서 로그인이 안
+// 되는 화면에서도) 맨 먼저, 동기적으로 실행한다 — 로그인 성공 여부에 기대지 않기 위함.
+(function checkLegacyLocalData(){
+  try{
+    const raw = localStorage.getItem('classswap_state_v1');
+    if(!raw) return;
+    const parsed = JSON.parse(raw);
+    if(!parsed || !Array.isArray(parsed.teachers) || parsed.teachers.length===0) return;
+    document.addEventListener('DOMContentLoaded', ()=>{
+      const banner = document.getElementById('legacyDataBanner');
+      if(!banner) return;
+      banner.style.display = 'block';
+      document.getElementById('btnDownloadLegacy').addEventListener('click', ()=>{
+        const blob = new Blob([JSON.stringify(parsed, null, 2)], {type:'application/json'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `classswap_이전데이터_복구_${Date.now()}.json`;
+        a.click();
+      });
+      document.getElementById('btnDismissLegacyBanner').addEventListener('click', ()=>{ banner.style.display='none'; });
+    });
+  }catch(e){ console.error('이전 데이터 확인 실패', e); }
+})();
+
 /* =========================================================================
    상태(state) 관리: 구글 로그인 후 Firestore classswap/state 문서 하나에 저장
    ========================================================================= */
@@ -2114,13 +2144,38 @@ async function isApprovedEmail(email){
   }
 }
 
+// 예전(로그인 도입 전) 버전이 이 브라우저의 localStorage에 썼던 데이터 — Firebase로 바꾸면서
+// 더 이상 앱이 읽지 않게 됐을 뿐, 지운 적은 없어서 그대로 남아있을 가능성이 높다. Firestore가
+// 비어있는 채로 처음 뜨면 이걸 찾아서 복구할지 물어본다.
+const LEGACY_STORAGE_KEY = 'classswap_state_v1';
+function tryRecoverLegacyLocalData(){
+  if(state.teachers.length > 0) return; // 이미 Firestore에 데이터가 있으면 건드리지 않음
+  let parsed;
+  try{
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if(!raw) return;
+    parsed = JSON.parse(raw);
+  }catch(e){ return; }
+  if(!parsed || !parsed.teachers || parsed.teachers.length===0) return;
+  if(confirm(`이 브라우저에 예전에 쓰시던 데이터(교사 ${parsed.teachers.length}명 등)가 남아있는 걸 찾았습니다. 지금 불러와서 복구할까요?`)){
+    state = normalizeState(parsed);
+    saveState();
+    renderAll();
+    alert('복구했습니다. 확인해보세요. (이상 없으면 이제 "백업 내보내기"로 한 번 더 백업받아두시는 걸 권장합니다)');
+  }
+}
+
 function startStateListener(){
   if(unsubscribeStateListener) unsubscribeStateListener();
   let firstLoad = true;
   unsubscribeStateListener = db.collection('classswap').doc('state').onSnapshot(snap=>{
     state = normalizeState(snap.exists ? snap.data() : null);
     renderAll();
-    if(firstLoad){ showGate('app'); firstLoad = false; }
+    if(firstLoad){
+      showGate('app');
+      firstLoad = false;
+      tryRecoverLegacyLocalData();
+    }
   }, err=>{
     console.error('데이터 불러오기 실패', err);
     alert('데이터를 불러오지 못했습니다(인터넷 연결을 확인하세요): ' + err.message);
