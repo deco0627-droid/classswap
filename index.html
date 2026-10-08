@@ -227,6 +227,9 @@
             <label>분반 그룹명</label>
             <input type="text" id="cellSplitGroup" placeholder="예: 1학년 수학분반">
           </div>
+          <div class="field">
+            <label><input type="checkbox" id="cellLocked"> 교체 불가(고정 수업)</label>
+          </div>
         </div>
         <div id="cellSplitPartnersField" style="display:none;margin-top:10px">
           <div class="row" style="align-items:center">
@@ -242,6 +245,7 @@
           <button id="btnCellCancel" class="small">취소</button>
         </div>
         <div class="hint">같은 교시·같은 분반 그룹명을 쓰는 다른 교사가 있으면, 그중 한 명이 출장일 때 나머지 분반과 합쳐서 보강하는 형태로 추천됩니다(맞교체 상대를 따로 찾지 않음).</div>
+        <div class="hint"><b>교체 불가(고정 수업)</b>로 표시하면 이 교시는 수업 교체 대상에서 완전히 빠집니다 — 이 교시를 가진 교사가 출장이어도 대체를 찾지 않고, 다른 교사의 맞교체 상대(갚는 교시)로도 절대 추천되지 않습니다. 조회·외부강사 수업처럼 날짜를 옮길 수 없는 고정 일정에 쓰세요.</div>
       </div>
     </div>
   </section>
@@ -846,7 +850,7 @@ function isExcludedSubject(subject){
   return (state.settings.excludedSubjects||[]).includes(String(subject||'').trim());
 }
 function isSwappableCell(cell){
-  return !!cell && !isExcludedSubject(cell.subject);
+  return !!cell && !isExcludedSubject(cell.subject) && !cell.locked;
 }
 
 /* =========================================================================
@@ -1119,7 +1123,8 @@ function renderTimetableEditGrid(){
       const cell = getBaseCell(teacherId, w, p);
       const classBadge = cell && cell.className ? `<div style="font-size:9px;color:var(--text-dim)">${escapeHtml(formatClassCode(cell.className))}</div>` : '';
       const splitBadge = cell && cell.split ? `<div style="font-size:9px;color:var(--accent)" title="분반: ${escapeAttr(cell.splitGroup||'')}">분반 ${escapeHtml(cell.splitGroup||'')}</div>` : '';
-      html += `<td class="cell ${cell?'busy':''}" data-w="${w}" data-p="${p}">${classBadge}${cell?escapeHtml(cell.subject||''):''}${splitBadge}</td>`;
+      const lockedBadge = cell && cell.locked ? `<div style="font-size:9px;color:var(--danger)" title="교체 불가(고정 수업)">🔒 고정</div>` : '';
+      html += `<td class="cell ${cell?'busy':''}" data-w="${w}" data-p="${p}">${classBadge}${cell?escapeHtml(cell.subject||''):''}${splitBadge}${lockedBadge}</td>`;
     }
     html += '</tr>';
   }
@@ -1191,6 +1196,7 @@ function openCellEditPanel(teacherId, w, p){
   document.getElementById('cellSplitGroup').value = cur ? (cur.splitGroup||'') : '';
   document.getElementById('cellSplitGroupField').style.display = (cur && cur.split) ? '' : 'none';
   document.getElementById('cellSplitPartnersField').style.display = (cur && cur.split) ? '' : 'none';
+  document.getElementById('cellLocked').checked = !!(cur && cur.locked);
   panel.style.display = '';
   panel.dataset.teacherId = teacherId;
   panel.dataset.w = w;
@@ -1238,9 +1244,10 @@ document.getElementById('btnCellSave').addEventListener('click', ()=>{
   const className = document.getElementById('cellClassCode').value.trim();
   const split = document.getElementById('cellSplit').checked;
   const splitGroup = document.getElementById('cellSplitGroup').value.trim();
+  const locked = document.getElementById('cellLocked').checked;
   if(!subject){ alert('과목/내용을 입력하거나, 수업이 없으면 "공강으로 비우기"를 누르세요.'); return; }
   if(split && !splitGroup){ alert('분반수업으로 표시하려면 분반 그룹명을 입력하세요(같은 그룹명을 쓰는 다른 교사와 짝지어집니다).'); return; }
-  setBaseCell(teacherId, w, p, { subject, className, split, splitGroup: split?splitGroup:'' });
+  setBaseCell(teacherId, w, p, { subject, className, split, splitGroup: split?splitGroup:'', locked });
   // 체크한 다른 교사들도 같은 분반 그룹으로 한 번에 표시(각자 원래 과목/반은 그대로 두고 분반 정보만 추가)
   let partnerCount = 0;
   if(split){
