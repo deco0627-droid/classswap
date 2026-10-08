@@ -784,6 +784,13 @@ function isBlockedSlot(teacherId, w, p){
   const t = getTeacher(teacherId);
   return !!(t && (t.blockedSlots||[]).includes(slotKey(w,p)));
 }
+// 배정불가 체크에 같이 달아둔 메모(예: "변귀섭 병가 대체") — 원래 공강인 교시를 다른 선생님 수업을
+// 대신 맡느라 못 쓰게 된 경우처럼, 왜 막혔는지 바로 알아볼 수 있게 적어두는 용도. 없으면 null.
+function getBlockedNote(teacherId, w, p){
+  const t = getTeacher(teacherId);
+  if(!t || !t.blockedNotes) return null;
+  return t.blockedNotes[slotKey(w,p)] || null;
+}
 // 수동으로 켜둔 "배정불가" 체크는 회의·당직처럼 수업과 무관한 고정 사정을 표시하는 용도다.
 // 이 교시에 실제로 추적되는 교체(decision)가 생기면 — 즉 "왜 바쁜지"가 이제 그 교체 기록으로
 // 설명되면 — 중복으로 남아있는 수동 배정불가 체크는 자동으로 지운다. 안 지우면 나중에 그 교체를
@@ -794,6 +801,7 @@ function clearBlockedSlot(teacherId, w, p){
   const key = slotKey(w,p);
   const idx = t.blockedSlots.indexOf(key);
   if(idx>=0) t.blockedSlots.splice(idx,1);
+  if(t.blockedNotes) delete t.blockedNotes[key];
 }
 function getEffectiveBusy(teacherId, date, w, p){
   for(const d of allConfirmedDecisions()){
@@ -830,7 +838,7 @@ function getEffectiveCell(teacherId, date, w, p){
   }
   const base = getBaseCell(teacherId, w, p);
   if(base) return { subject: base.subject, className: base.className, note: null };
-  if(isBlockedSlot(teacherId, w, p)) return { subject: '', className: '', note: '배정 불가(항상)' };
+  if(isBlockedSlot(teacherId, w, p)) return { subject: '', className: '', note: getBlockedNote(teacherId, w, p) || '배정 불가(항상)' };
   return null;
 }
 function slotTouchedByAnyDecision(teacherId, date, w, p){
@@ -1173,7 +1181,14 @@ function renderTeachers(){
       (t.specialized ? `<span class="badge spec">전문교과${t.specialtyGroup?(' · '+escapeHtml(t.specialtyGroup)):''}</span>` : '') +
       (t.weeklyHours!=null ? `<span class="badge">주당 ${t.weeklyHours}시간</span>` : '') +
       ((t.excluded||[]).length ? `<span class="badge warn">제외 ${t.excluded.length}명</span>` : '') +
-      ((t.blockedSlots||[]).length ? `<span class="badge warn">배정불가 ${t.blockedSlots.length}교시</span>` : '') +
+      ((t.blockedSlots||[]).length ? (()=>{
+        const noteSummary = (t.blockedSlots||[]).map(key=>{
+          const [w,p] = key.split('-').map(Number);
+          const note = t.blockedNotes && t.blockedNotes[key];
+          return note ? `${WEEKDAY_LABELS[w]}${p}: ${note}` : null;
+        }).filter(Boolean).join(' / ');
+        return `<span class="badge warn" ${noteSummary?`title="${escapeAttr(noteSummary)}"`:''}>배정불가 ${t.blockedSlots.length}교시</span>`;
+      })() : '') +
       (t.neverSwap ? `<span class="badge warn">교체 후보 전체 제외</span>` : '');
     det.appendChild(summary);
 
@@ -1198,7 +1213,7 @@ function renderTeachers(){
           <button type="button" class="btnBlockedClear small" style="margin-left:6px">체크 전체 해제</button>
         </label>
         <div class="f-blocked" style="overflow-x:auto"></div>
-        <div class="hint" style="margin-top:4px"><span style="background:var(--accent-dim);padding:1px 6px;border-radius:3px">색칠된 칸</span> = 이미 수업이 있는 교시(과목명 표시), 색 없는 칸 = 원래 공강인 교시. 체크는 둘 다 가능합니다(공강에 체크하면 그 교시도 새로 배정 못 하게 막는 것).</div>
+        <div class="hint" style="margin-top:4px"><span style="background:var(--accent-dim);padding:1px 6px;border-radius:3px">색칠된 칸</span> = 이미 수업이 있는 교시(과목명 표시), 색 없는 칸 = 원래 공강인 교시. 체크는 둘 다 가능합니다(공강에 체크하면 그 교시도 새로 배정 못 하게 막는 것). 체크박스 아래 칸에 "변귀섭 병가 대체"처럼 메모를 적어두면, 이 교시가 왜 막혔는지가 시간표·배정 화면에 그대로 표시됩니다(안 적으면 그냥 "배정불가"로만 표시).</div>
       </div>
       <div class="toolbar" style="margin-top:10px">
         <button class="btnSave small primary">저장</button>
@@ -1218,10 +1233,12 @@ function renderTeachers(){
           if(p > periodsFor(w)){ bHtml += '<td></td>'; continue; }
           const checked = (t.blockedSlots||[]).includes(slotKey(w,p));
           const cell = getBaseCell(t.id, w, p);
+          const noteVal = (t.blockedNotes && t.blockedNotes[slotKey(w,p)]) || '';
           const classLabel = cell
             ? `<div style="font-size:11px;color:var(--text)" title="${escapeAttr(cell.subject||'')}">${escapeHtml(cell.subject||'(수업)')}</div>`
             : `<div style="font-size:11px;color:var(--text-dim)">공강</div>`;
-          bHtml += `<td style="text-align:center;padding:6px;${cell?'background:var(--accent-dim)':''}">${classLabel}<input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''} style="transform:scale(1.5);cursor:pointer"></td>`;
+          bHtml += `<td style="text-align:center;padding:6px;${cell?'background:var(--accent-dim)':''}">${classLabel}<input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''} style="transform:scale(1.5);cursor:pointer">`
+            + `<input type="text" class="f-blocked-note" data-w="${w}" data-p="${p}" value="${escapeAttr(noteVal)}" placeholder="메모(예: 병가 대체)" style="display:block;width:92px;margin:4px auto 0;font-size:10px;padding:2px 4px"></td>`;
         }
         bHtml += '</tr>';
       }
@@ -1230,6 +1247,7 @@ function renderTeachers(){
     }
     body.querySelector('.btnBlockedClear').addEventListener('click', ()=>{
       blockedWrap.querySelectorAll('.f-blocked-chk').forEach(cb=>cb.checked=false);
+      blockedWrap.querySelectorAll('.f-blocked-note').forEach(inp=>inp.value='');
     });
 
     const exWrap = body.querySelector('.f-excluded');
@@ -1254,6 +1272,14 @@ function renderTeachers(){
       t.specialtyGroup = body.querySelector('.f-group').value.trim();
       t.excluded = Array.from(exWrap.querySelectorAll('input[type=checkbox]:checked')).map(i=>i.value);
       t.blockedSlots = Array.from(blockedWrap.querySelectorAll('.f-blocked-chk:checked')).map(cb=>slotKey(parseInt(cb.dataset.w,10), parseInt(cb.dataset.p,10)));
+      const blockedNotes = {};
+      blockedWrap.querySelectorAll('.f-blocked-chk:checked').forEach(cb=>{
+        const key = slotKey(parseInt(cb.dataset.w,10), parseInt(cb.dataset.p,10));
+        const noteInput = blockedWrap.querySelector(`.f-blocked-note[data-w="${cb.dataset.w}"][data-p="${cb.dataset.p}"]`);
+        const noteVal = noteInput ? noteInput.value.trim() : '';
+        if(noteVal) blockedNotes[key] = noteVal;
+      });
+      t.blockedNotes = blockedNotes;
       saveState();
       renderTeachers(); renderAllSelects();
     });
@@ -1271,7 +1297,7 @@ function renderTeachers(){
 document.getElementById('btnAddTeacher').addEventListener('click', ()=>{
   const name = prompt('새 교사 이름');
   if(!name) return;
-  state.teachers.push({ id: uid('t'), name: name.trim(), subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours:null, blockedSlots:[], neverSwap:false });
+  state.teachers.push({ id: uid('t'), name: name.trim(), subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours:null, blockedSlots:[], blockedNotes:{}, neverSwap:false });
   saveState();
   renderTeachers(); renderAllSelects();
 });
@@ -1709,7 +1735,7 @@ document.getElementById('btnCommitImport').addEventListener('click', ()=>{
     const weeklyHours = extractWeeklyHours(row[importState.teacherColIdx]);
     let teacher = state.teachers.find(t=>t.name===name);
     if(!teacher){
-      teacher = { id: uid('t'), name, subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours: weeklyHours ?? null, blockedSlots:[], neverSwap:false };
+      teacher = { id: uid('t'), name, subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours: weeklyHours ?? null, blockedSlots:[], blockedNotes:{}, neverSwap:false };
       state.teachers.push(teacher);
       added++;
     } else {
@@ -1752,7 +1778,8 @@ function renderTimetableEditGrid(){
       const classBadge = cell && cell.className ? `<div style="font-size:9px;color:var(--text-dim)">${escapeHtml(formatClassCode(cell.className))}</div>` : '';
       const splitBadge = cell && cell.split ? `<div style="font-size:9px;color:var(--accent)" title="분반: ${escapeAttr(cell.splitGroup||'')}">분반 ${escapeHtml(cell.splitGroup||'')}</div>` : '';
       const lockedBadge = cell && cell.locked ? `<div style="font-size:9px;color:var(--danger)" title="교체 불가(고정 수업)">🔒 고정</div>` : '';
-      const blockedBadge = blocked ? `<div style="font-size:9px;color:var(--danger)" title="배정 불가(항상)">🚫 배정불가</div>` : '';
+      const blockedNote = blocked ? getBlockedNote(teacherId, w, p) : null;
+      const blockedBadge = blocked ? `<div style="font-size:9px;color:var(--danger)" title="${escapeAttr(blockedNote||'배정 불가(항상)')}">🚫 ${blockedNote?escapeHtml(blockedNote):'배정불가'}</div>` : '';
       html += `<td class="cell ${cell?'busy':''}" data-w="${w}" data-p="${p}" ${blocked&&!cell?'style="background:var(--panel2)"':''}>${classBadge}${cell?escapeHtml(cell.subject||''):''}${splitBadge}${lockedBadge}${blockedBadge}</td>`;
     }
     html += '</tr>';
