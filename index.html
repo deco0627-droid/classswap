@@ -265,19 +265,23 @@
       </div>
       <div class="hint">여기 넣은 시각이 시간표·추천 화면의 교시 번호 옆에 그대로 표시됩니다.</div>
       <div class="field" style="margin-top:10px">
-        <label>학사일정 휴무일(공휴일·방학·재량휴업일 등)</label>
-        <div class="row">
+        <label>학사일정 휴무일·특별 기간(공휴일·방학·재량휴업일·중간/기말고사 등)</label>
+        <div class="row" style="align-items:center">
           <input type="date" id="holidaySingle" style="width:150px">
+          <input type="text" id="holidaySingleLabel" placeholder="명칭(예: 재량휴업일)" style="width:160px">
           <button id="btnAddHolidaySingle" class="small">하루 추가</button>
+        </div>
+        <div class="row" style="align-items:center;margin-top:6px">
           <span class="muted">또는 기간으로:</span>
           <input type="date" id="holidayRangeFrom" style="width:150px">
           <span class="muted">~</span>
           <input type="date" id="holidayRangeTo" style="width:150px">
-          <button id="btnAddHolidayRange" class="small">기간 추가(예: 방학)</button>
+          <input type="text" id="holidayRangeLabel" placeholder="명칭(예: 중간고사, 여름방학)" style="width:160px">
+          <button id="btnAddHolidayRange" class="small">기간 추가</button>
         </div>
         <div id="holidayList" class="row" style="margin-top:8px"></div>
       </div>
-      <div class="hint">여기 등록한 날짜는 평일이어도 수업·교체 대상 자체에서 완전히 빠지고(그 날 수업이 아예 없는 것으로 취급), 맞교체 상대 날짜로도 추천되지 않습니다.</div>
+      <div class="hint">여기 등록한 날짜는 평일이어도 수업·교체 대상 자체에서 완전히 빠지고(그 날 수업이 아예 없는 것으로 취급), 맞교체 상대 날짜로도 추천되지 않습니다 — 명칭과 상관없이 전부 똑같이 적용됩니다. <b>명칭</b>은 나중에 목록에서 "왜 뺐는지"(방학인지 중간고사인지 등)를 바로 알아보기 위한 메모일 뿐이고, 비워두면 그냥 "휴무일"로만 표시됩니다.</div>
     </div>
     <div class="card">
       <div class="toolbar">
@@ -464,6 +468,7 @@
 
     <div class="card">
       <h2 style="margin:0 0 10px">등록된 출장</h2>
+      <div class="hint" style="margin-top:0">선생님별로(일반·전문교과 구분) 묶어서 보여줍니다. <b>종료일로부터 한 달이 지난 출장은 자동으로 목록에서 삭제됩니다</b>(확정된 교체 기록도 함께 사라집니다) — 기록으로 남기고 싶으면 그 전에 "교체 내역" 탭에서 CSV로 내보내두세요.</div>
       <div id="tripList"></div>
     </div>
   </section>
@@ -549,7 +554,7 @@ function defaultState(){
     settings: {
       schoolYear: defaultSchoolYear(),
       periodsByDay: [7,7,7,7,7], excludedSubjects: ['창체'], maxBlockPeriods: 2, expandWeeks: 3,
-      holidays: [], // 학사일정 휴무일(공휴일·방학·재량휴업일 등). "YYYY-MM-DD" 문자열 목록 — 이 날짜는 평일이어도 수업/교체 대상에서 통째로 빠짐.
+      holidays: [], // 학사일정 휴무일·특별기간(공휴일·방학·중간고사 등). {date:"YYYY-MM-DD", label} 목록 — 이 날짜는 평일이어도 수업/교체 대상에서 통째로 빠짐.
       // 교시별 실제 시작~종료 시각(모든 요일 공통). 화면에 표시되는 "오늘 시간표"를 그대로 기본값으로 넣어둠 — 다르면 설정에서 고치면 됨.
       periodTimes: { 1:{start:'08:50',end:'09:40'}, 2:{start:'09:50',end:'10:40'}, 3:{start:'10:50',end:'11:40'},
         4:{start:'11:50',end:'12:40'}, 5:{start:'13:30',end:'14:20'}, 6:{start:'14:30',end:'15:20'} }
@@ -570,6 +575,9 @@ function normalizeState(parsed){
     settings.periodsByDay = [1,2,3,4,5].map(()=> legacy || 7);
   }
   delete settings.periodsPerDay;
+  // 예전엔 휴무일이 그냥 "YYYY-MM-DD" 문자열 목록이었다(명칭 없음) — 중간고사/방학처럼 왜 뺐는지
+  // 구분하고 싶다는 요청으로 {date, label} 객체로 바뀌었다. 기존 문자열 항목은 명칭 빈 채로 승격.
+  settings.holidays = (settings.holidays||[]).map(h => typeof h === 'string' ? { date: h, label: '' } : h);
   return {
     settings,
     teachers: (parsed && parsed.teachers) || [],
@@ -719,7 +727,7 @@ function weekdayIndexOfDate(iso){
   return JSDAY_FOR_INDEX.indexOf(jsDay); // -1 이면 주말
 }
 function isHoliday(iso){
-  return (state.settings.holidays||[]).includes(iso);
+  return (state.settings.holidays||[]).some(h => h.date === iso);
 }
 function expandRange(dateFrom, dateTo){
   const out = [];
@@ -1443,45 +1451,66 @@ document.getElementById('expandWeeks').addEventListener('change', e=>{
   if(v>0){ state.settings.expandWeeks = v; saveState(); }
 });
 
+// 같은 명칭으로 연속된 날짜는 "~"로 묶어서 하나의 배지로 보여준다 — 방학처럼 긴 기간이 날짜
+// 수십 개로 따로따로 뜨면 알아보기 어려워서다.
 function renderHolidayList(){
   const wrap = document.getElementById('holidayList');
-  const list = (state.settings.holidays||[]).slice().sort();
+  const list = (state.settings.holidays||[]).slice().sort((a,b)=>a.date.localeCompare(b.date));
   if(list.length===0){ wrap.innerHTML = '<div class="muted">등록된 휴무일이 없습니다.</div>'; return; }
-  wrap.innerHTML = list.map(d => `<span class="badge warn">${d} <button class="btnRemoveHoliday" data-date="${d}" style="margin-left:4px;padding:0 5px;font-size:10px">✕</button></span>`).join('');
+  const groups = [];
+  for(const h of list){
+    const last = groups[groups.length-1];
+    const nextOfLast = last ? fmtISO(addDays(parseISO(last.to), 1)) : null;
+    if(last && last.label===(h.label||'') && nextOfLast===h.date){
+      last.to = h.date; last.dates.push(h.date);
+    } else {
+      groups.push({ from:h.date, to:h.date, label:h.label||'', dates:[h.date] });
+    }
+  }
+  wrap.innerHTML = groups.map(g=>{
+    const rangeTxt = g.from===g.to ? g.from : `${g.from} ~ ${g.to}`;
+    const labelTxt = g.label ? ` <b>${escapeHtml(g.label)}</b>` : '';
+    return `<span class="badge warn">${rangeTxt}${labelTxt} <button class="btnRemoveHoliday" data-dates='${escapeAttr(JSON.stringify(g.dates))}' style="margin-left:4px;padding:0 5px;font-size:10px">✕</button></span>`;
+  }).join('');
   wrap.querySelectorAll('.btnRemoveHoliday').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      state.settings.holidays = (state.settings.holidays||[]).filter(d=>d!==btn.dataset.date);
+      const toRemove = new Set(JSON.parse(btn.dataset.dates));
+      state.settings.holidays = (state.settings.holidays||[]).filter(h=>!toRemove.has(h.date));
       saveState();
       renderHolidayList();
     });
   });
 }
-function addHolidayDates(dates){
-  const set = new Set(state.settings.holidays||[]);
-  dates.forEach(d=>set.add(d));
-  state.settings.holidays = Array.from(set).sort();
+function addHolidayDates(dates, label){
+  const map = new Map((state.settings.holidays||[]).map(h=>[h.date, h]));
+  dates.forEach(d=> map.set(d, { date: d, label: (label||'').trim() }));
+  state.settings.holidays = Array.from(map.values()).sort((a,b)=>a.date.localeCompare(b.date));
   saveState();
   renderHolidayList();
 }
 document.getElementById('btnAddHolidaySingle').addEventListener('click', ()=>{
   const v = document.getElementById('holidaySingle').value;
   if(!v){ alert('날짜를 먼저 선택하세요.'); return; }
-  addHolidayDates([v]);
+  const label = document.getElementById('holidaySingleLabel').value;
+  addHolidayDates([v], label);
   document.getElementById('holidaySingle').value = '';
+  document.getElementById('holidaySingleLabel').value = '';
 });
 document.getElementById('btnAddHolidayRange').addEventListener('click', ()=>{
   const from = document.getElementById('holidayRangeFrom').value;
   const to = document.getElementById('holidayRangeTo').value;
   if(!from || !to || from>to){ alert('기간을 올바르게 입력하세요.'); return; }
+  const label = document.getElementById('holidayRangeLabel').value;
   const dates = [];
   let cur = parseISO(from);
   const end = parseISO(to);
   let guard = 0;
   while(cur<=end && guard<1000){ dates.push(fmtISO(cur)); cur.setDate(cur.getDate()+1); guard++; }
-  addHolidayDates(dates);
+  addHolidayDates(dates, label);
   document.getElementById('holidayRangeFrom').value = '';
   document.getElementById('holidayRangeTo').value = '';
-  alert(`${dates.length}일을 휴무일로 추가했습니다.`);
+  document.getElementById('holidayRangeLabel').value = '';
+  alert(`${dates.length}일을 "${label.trim()||'휴무일'}"(으)로 추가했습니다.`);
 });
 
 function renderPeriodTimes(){
@@ -2031,13 +2060,88 @@ document.getElementById('btnAddTrip').addEventListener('click', ()=>{
 
 function renderTrips(){
   const wrap = document.getElementById('tripList');
-  // 다시 그리기 전에 펼쳐져 있던 출장(details)을 기억해뒀다가 그대로 복원 — 자동 배정/확정/되돌리기
-  // 버튼을 누를 때마다 목록이 통째로 접혀버리면 방금 보던 교시를 또 찾아야 해서 불편하다.
-  const openIds = new Set(Array.from(wrap.querySelectorAll('details[open]')).map(d=>d.dataset.tripId));
+  // 다시 그리기 전에 펼쳐져 있던 출장/교사/그룹(details)을 기억해뒀다가 그대로 복원 — 자동 배정/
+  // 확정/되돌리기 버튼을 누를 때마다 목록이 통째로 접혀버리면 방금 보던 교시를 또 찾아야 해서 불편하다.
+  const openIds = new Set(Array.from(wrap.querySelectorAll('details[data-trip-id][open]')).map(d=>d.dataset.tripId));
+  const openTeacherIds = new Set(Array.from(wrap.querySelectorAll('details[data-trip-teacher-id][open]')).map(d=>d.dataset.tripTeacherId));
+  const openGroupKeys = new Set(Array.from(wrap.querySelectorAll('details[data-trip-group-key][open]')).map(d=>d.dataset.tripGroupKey));
   wrap.innerHTML = '';
   if(state.trips.length===0){ wrap.innerHTML = '<div class="muted">등록된 출장이 없습니다.</div>'; return; }
   const isAdmin = myRole === 'admin';
-  for(const trip of [...state.trips].sort((a,b)=> b.createdAt.localeCompare(a.createdAt))){
+
+  // 교사별로 묶고, 그 교사의 일반(인문)교과/전문교과(세부 그룹)로 다시 묶는다 — "교사 관리" 탭과
+  // 같은 분류 방식. 같은 교사가 출장을 여러 번 등록했으면 그 밑에 전부 모여서 보인다.
+  const byTeacher = new Map();
+  for(const trip of state.trips){
+    if(!byTeacher.has(trip.teacherId)) byTeacher.set(trip.teacherId, []);
+    byTeacher.get(trip.teacherId).push(trip);
+  }
+  const groups = {}; const groupOrder = [];
+  function pushGroup(key, title, teacherId, trips){
+    if(!groups[key]){ groups[key] = { title, teacherEntries: [] }; groupOrder.push(key); }
+    groups[key].teacherEntries.push({ teacherId, trips });
+  }
+  for(const [teacherId, trips] of byTeacher){
+    const gt = getTeacher(teacherId);
+    trips.sort((a,b)=> b.createdAt.localeCompare(a.createdAt));
+    if(!gt) pushGroup('__unlinked', '교사 미연결(삭제된 교사)', teacherId, trips);
+    else if(!gt.specialized) pushGroup('__general', '일반(인문)교과', teacherId, trips);
+    else pushGroup('spec:'+(gt.specialtyGroup||''), `전문교과 · ${gt.specialtyGroup||'(세부 그룹 미지정)'}`, teacherId, trips);
+  }
+  groupOrder.sort((a,b)=>{
+    const rank = k => k==='__general' ? -1 : k==='__unlinked' ? 1 : 0;
+    return rank(a)-rank(b) || a.localeCompare(b);
+  });
+
+  for(const key of groupOrder){
+    const g = groups[key];
+    g.teacherEntries.sort((a,b)=> (getTeacher(a.teacherId)?.name||'').localeCompare(getTeacher(b.teacherId)?.name||'', 'ko'));
+    const groupDet = document.createElement('details');
+    groupDet.className = 'group-details';
+    groupDet.dataset.tripGroupKey = key;
+    const groupHasLastCreated = g.teacherEntries.some(e=>e.trips.some(t=>t.id===lastCreatedTripId));
+    if(openGroupKeys.has(key) || groupHasLastCreated) groupDet.open = true;
+    const totalTeachers = g.teacherEntries.length;
+    const totalTrips = g.teacherEntries.reduce((s,e)=>s+e.trips.length,0);
+    const groupSummary = document.createElement('summary');
+    groupSummary.innerHTML = `${escapeHtml(g.title)} <span class="badge">${totalTeachers}명 · 출장 ${totalTrips}건</span>`;
+    groupDet.appendChild(groupSummary);
+    const groupBody = document.createElement('div');
+    groupBody.className = 'body';
+    groupDet.appendChild(groupBody);
+    wrap.appendChild(groupDet);
+
+  for(const entry of g.teacherEntries){
+    const teacherInfo = getTeacher(entry.teacherId);
+    const teacherDet = document.createElement('details');
+    teacherDet.dataset.tripTeacherId = entry.teacherId;
+    const teacherHasLastCreated = entry.trips.some(t=>t.id===lastCreatedTripId);
+    if(openTeacherIds.has(entry.teacherId) || teacherHasLastCreated) teacherDet.open = true;
+    const doneAll = entry.trips.reduce((s,tr)=> s + new Set((tr.decisions||[]).map(d=>d.blockId||d.id)).size, 0);
+    const totalAllSlots = entry.trips.reduce((s,tr)=> s + tr.affected.length, 0);
+    const teacherSummary = document.createElement('summary');
+    teacherSummary.innerHTML = `${escapeHtml(teacherInfo?teacherInfo.name:'(삭제된 교사)')} <span class="badge">출장 ${entry.trips.length}건</span>` +
+      `<span class="badge ${doneAll===totalAllSlots&&totalAllSlots>0?'ok':''}">${doneAll}/${totalAllSlots} 확정</span>`;
+    teacherDet.appendChild(teacherSummary);
+    const teacherBody = document.createElement('div');
+    teacherBody.className = 'body';
+    if(isAdmin && entry.trips.length>1){
+      const btnDeleteAllWrap = document.createElement('div');
+      btnDeleteAllWrap.className = 'toolbar';
+      btnDeleteAllWrap.innerHTML = `<button class="btnDeleteAllForTeacher small danger">이 교사 출장 전체 삭제(${entry.trips.length}건)</button>`;
+      btnDeleteAllWrap.querySelector('.btnDeleteAllForTeacher').addEventListener('click', ()=>{
+        if(!confirm(`${teacherInfo?teacherInfo.name:'이 교사'}의 출장 ${entry.trips.length}건을 전부 삭제할까요? 확정된 교체도 함께 취소됩니다.`)) return;
+        const idsToRemove = new Set(entry.trips.map(t=>t.id));
+        state.trips = state.trips.filter(x=>!idsToRemove.has(x.id));
+        saveState();
+        renderTrips(); renderHistory();
+      });
+      teacherBody.appendChild(btnDeleteAllWrap);
+    }
+    teacherDet.appendChild(teacherBody);
+    groupBody.appendChild(teacherDet);
+
+  for(const trip of entry.trips){
     const A = getTeacher(trip.teacherId);
     // 교사(일반)는 본인 출장 건에 한해서만 요청(승인 없이 자동 처리)으로 액션할 수 있다 — 다른
     // 교사 출장은 관리자와 "똑같이 보이긴" 하지만 조회만 가능(버튼 자체를 숨김).
@@ -2049,7 +2153,7 @@ function renderTrips(){
     det.dataset.tripId = trip.id;
     if(openIds.has(trip.id) || trip.id === lastCreatedTripId) det.open = true;
     const summary = document.createElement('summary');
-    summary.innerHTML = `${escapeHtml(A?A.name:'(삭제된 교사)')} <span class="badge">${trip.dateFrom} ~ ${trip.dateTo}</span>` +
+    summary.innerHTML = `<span class="badge">${trip.dateFrom} ~ ${trip.dateTo}</span>` +
       `<span class="badge ${done===total?'ok':''}">${done}/${total} 확정</span>` +
       (trip.title?`<span class="badge">${escapeHtml(trip.title)}</span>`:'') +
       (isMine ? ' <span class="badge spec">내 출장</span>' : '');
@@ -2089,7 +2193,7 @@ function renderTrips(){
       <div class="recoWrap"></div>
     `;
     det.appendChild(body);
-    wrap.appendChild(det);
+    teacherBody.appendChild(det);
     body.querySelector('.selModeFilter').value = trip.modeFilter || 'all';
     if(isAdmin){
       body.querySelector('.fixedTeacher').innerHTML = state.teachers
@@ -2260,7 +2364,9 @@ function renderTrips(){
         renderTrips(); renderHistory();
       });
     }
-  }
+  } // trip 루프 끝
+  } // teacher 루프 끝
+  } // group 루프 끝
   lastCreatedTripId = null; // 한 번 펼쳐 보여줬으면 그 다음부터는 사용자가 접고 펴는 대로 둔다
 }
 
@@ -2580,6 +2686,22 @@ function tryRecoverLegacyLocalData(){
   }
 }
 
+// 종료일로부터 한 달(30일)이 지난 출장은 자동으로 정리한다 — 테스트/완료된 출장이 계속 쌓여
+// "등록된 출장" 목록이 끝없이 길어지는 걸 막기 위함. 관리자 로그인 직후, 딱 한 번만 돌아간다.
+// 확정된 교체 기록도 그 출장과 함께 사라지므로("교체 내역"도 trips에서 바로 계산하는 값), 기록을
+// 남기고 싶으면 미리 CSV로 내보내둬야 한다는 안내를 "등록된 출장" 카드 상단에 같이 적어뒀다.
+function cleanupOldTrips(){
+  const today = fmtISO(new Date());
+  const cutoff = (dateTo) => fmtISO(addDays(parseISO(dateTo), 30));
+  const before = state.trips.length;
+  state.trips = state.trips.filter(trip => cutoff(trip.dateTo) >= today);
+  const removed = before - state.trips.length;
+  if(removed > 0){
+    saveState();
+    renderTrips(); renderHistory();
+    console.log(`${removed}건의 출장(종료일로부터 한 달 경과)을 자동으로 정리했습니다.`);
+  }
+}
 function startStateListener(){
   if(unsubscribeStateListener) unsubscribeStateListener();
   let firstLoad = true;
@@ -2589,8 +2711,11 @@ function startStateListener(){
     if(firstLoad){
       showGate('app');
       firstLoad = false;
-      tryRecoverLegacyLocalData();
-      renderApprovedEmails(); // 로그인 직후엔 이 시점에야 실제 교사 목록이 반영된 state가 들어와있다
+      if(myRole === 'admin'){
+        tryRecoverLegacyLocalData();
+        renderApprovedEmails(); // 로그인 직후엔 이 시점에야 실제 교사 목록이 반영된 state가 들어와있다
+        cleanupOldTrips();
+      }
     }
   }, err=>{
     console.error('데이터 불러오기 실패', err);
