@@ -698,6 +698,17 @@ function isBlockedSlot(teacherId, w, p){
   const t = getTeacher(teacherId);
   return !!(t && (t.blockedSlots||[]).includes(slotKey(w,p)));
 }
+// 수동으로 켜둔 "배정불가" 체크는 회의·당직처럼 수업과 무관한 고정 사정을 표시하는 용도다.
+// 이 교시에 실제로 추적되는 교체(decision)가 생기면 — 즉 "왜 바쁜지"가 이제 그 교체 기록으로
+// 설명되면 — 중복으로 남아있는 수동 배정불가 체크는 자동으로 지운다. 안 지우면 나중에 그 교체를
+// 되돌려도 배정불가가 여전히 남아 엉뚱하게 계속 막아버리고, 둘 다 켜져 있으면 왜 바쁜지 헷갈린다.
+function clearBlockedSlot(teacherId, w, p){
+  const t = getTeacher(teacherId);
+  if(!t || !t.blockedSlots || t.blockedSlots.length===0) return;
+  const key = slotKey(w,p);
+  const idx = t.blockedSlots.indexOf(key);
+  if(idx>=0) t.blockedSlots.splice(idx,1);
+}
 function getEffectiveBusy(teacherId, date, w, p){
   for(const d of allConfirmedDecisions()){
     if(matchSlot(d.vacated, teacherId, date, w, p)) return null;
@@ -994,6 +1005,10 @@ function confirmDecision(trip, slot, teacherBId, partnerBlock, mode){
   });
   trip.decisions = trip.decisions || [];
   trip.decisions.push(...newDecisions);
+  for(const d of newDecisions){
+    clearBlockedSlot(d.covered.teacherId, d.covered.w, d.covered.p);
+    if(d.reciprocalCovered) clearBlockedSlot(d.reciprocalCovered.teacherId, d.reciprocalCovered.w, d.reciprocalCovered.p);
+  }
   saveState();
   return true;
 }
