@@ -500,6 +500,7 @@ function slotTouchedByAnyDecision(teacherId, date, w, p){
 function isExcludedPair(teacherAId, teacherBId, trip){
   const a = getTeacher(teacherAId), b = getTeacher(teacherBId);
   if(!a || !b) return true;
+  if(b.neverSwap) return true; // B가 "교체 후보에서 전체 제외"로 표시됨 — 특정 상대와만이 아니라 아무도의 후보가 안 됨
   if((a.excluded||[]).includes(teacherBId)) return true;
   if((b.excluded||[]).includes(teacherAId)) return true;
   if(trip && (trip.excludedExtra||[]).includes(teacherBId)) return true;
@@ -725,7 +726,8 @@ function renderTeachers(){
       (t.specialized ? `<span class="badge spec">전문교과${t.specialtyGroup?(' · '+escapeHtml(t.specialtyGroup)):''}</span>` : '') +
       (t.weeklyHours!=null ? `<span class="badge">주당 ${t.weeklyHours}시간</span>` : '') +
       ((t.excluded||[]).length ? `<span class="badge warn">제외 ${t.excluded.length}명</span>` : '') +
-      ((t.blockedSlots||[]).length ? `<span class="badge warn">배정불가 ${t.blockedSlots.length}교시</span>` : '');
+      ((t.blockedSlots||[]).length ? `<span class="badge warn">배정불가 ${t.blockedSlots.length}교시</span>` : '') +
+      (t.neverSwap ? `<span class="badge warn">교체 후보 전체 제외</span>` : '');
     det.appendChild(summary);
 
     const body = document.createElement('div');
@@ -737,7 +739,9 @@ function renderTeachers(){
         <div class="field"><label>주당 수업시수</label><input type="number" class="f-hours" min="0" style="width:80px" value="${t.weeklyHours!=null?t.weeklyHours:''}"></div>
         <div class="field"><label><input type="checkbox" class="f-spec" ${t.specialized?'checked':''}> 전문교과</label>
           <input type="text" class="f-group" placeholder="세부 그룹(예: 전기전자)" value="${escapeAttr(t.specialtyGroup||'')}"></div>
+        <div class="field"><label><input type="checkbox" class="f-never" ${t.neverSwap?'checked':''}> 교체 후보에서 전체 제외</label></div>
       </div>
+      <div class="hint" style="margin-top:-4px">"교체 후보에서 전체 제외"를 체크하면 이 교사는 어떤 출장 건에서도(특정 상대 지정 없이) 아무에게도 대체·맞교체 후보로 추천되지 않습니다. 특정 교사와만 안 맞바꾸고 싶으면 아래 "이 교사와는 교체하지 않음"을 쓰세요.</div>
       <div class="field" style="margin-top:8px">
         <label>이 교사와는 교체하지 않음 (양방향 적용)</label>
         <div class="row f-excluded"></div>
@@ -789,6 +793,7 @@ function renderTeachers(){
       const hoursVal = body.querySelector('.f-hours').value.trim();
       t.weeklyHours = hoursVal ? parseInt(hoursVal,10) : null;
       t.specialized = body.querySelector('.f-spec').checked;
+      t.neverSwap = body.querySelector('.f-never').checked;
       t.specialtyGroup = body.querySelector('.f-group').value.trim();
       t.excluded = Array.from(exWrap.querySelectorAll('input[type=checkbox]:checked')).map(i=>i.value);
       t.blockedSlots = Array.from(blockedWrap.querySelectorAll('.f-blocked-chk:checked')).map(cb=>slotKey(parseInt(cb.dataset.w,10), parseInt(cb.dataset.p,10)));
@@ -808,7 +813,7 @@ function renderTeachers(){
 document.getElementById('btnAddTeacher').addEventListener('click', ()=>{
   const name = prompt('새 교사 이름');
   if(!name) return;
-  state.teachers.push({ id: uid('t'), name: name.trim(), subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours:null, blockedSlots:[] });
+  state.teachers.push({ id: uid('t'), name: name.trim(), subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours:null, blockedSlots:[], neverSwap:false });
   saveState();
   renderTeachers(); renderAllSelects();
 });
@@ -1114,7 +1119,7 @@ document.getElementById('btnCommitImport').addEventListener('click', ()=>{
     const weeklyHours = extractWeeklyHours(row[importState.teacherColIdx]);
     let teacher = state.teachers.find(t=>t.name===name);
     if(!teacher){
-      teacher = { id: uid('t'), name, subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours: weeklyHours ?? null, blockedSlots:[] };
+      teacher = { id: uid('t'), name, subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours: weeklyHours ?? null, blockedSlots:[], neverSwap:false };
       state.teachers.push(teacher);
       added++;
     } else {
