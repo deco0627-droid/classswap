@@ -864,7 +864,7 @@ function renderTeachers(){
         for(let w=0; w<5; w++){
           if(p > periodsFor(w)){ bHtml += '<td></td>'; continue; }
           const checked = (t.blockedSlots||[]).includes(slotKey(w,p));
-          bHtml += `<td style="text-align:center;padding:2px"><input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''}></td>`;
+          bHtml += `<td style="text-align:center;padding:10px"><input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''} style="transform:scale(2);cursor:pointer"></td>`;
         }
         bHtml += '</tr>';
       }
