@@ -2326,6 +2326,10 @@ function renderAll(){
   renderTimetableEditGrid();
   renderTrips();
   renderHistory();
+  // 로그인 직후엔 Firestore 데이터가 비동기로 도착하기 전에 관리자 탭의 "연결할 교사" 드롭다운이
+  // 먼저 그려져서 빈 채로 남는 경우가 있었다 — state가 갱신될 때마다 이 드롭다운도 같이 최신화.
+  const newTeacherSel = document.getElementById('newApprovedTeacher');
+  if(newTeacherSel) fillTeacherSelect(newTeacherSel, newTeacherSel.value);
 }
 
 /* =========================================================================
@@ -2428,6 +2432,7 @@ function startStateListener(){
       showGate('app');
       firstLoad = false;
       tryRecoverLegacyLocalData();
+      renderApprovedEmails(); // 로그인 직후엔 이 시점에야 실제 교사 목록이 반영된 state가 들어와있다
     }
   }, err=>{
     console.error('데이터 불러오기 실패', err);
