@@ -169,7 +169,30 @@
         <select id="ttEditTeacher"></select>
       </div>
       <div id="ttEditGrid" style="margin-top:10px;overflow-x:auto"></div>
-      <div class="hint">칸을 클릭하면 과목/반을 입력할 수 있습니다. 비우고 확인하면 공강으로 처리됩니다.</div>
+      <div class="hint">칸을 클릭하면 아래에서 과목과 분반수업 여부를 입력할 수 있습니다.</div>
+
+      <div id="cellEditPanel" class="card" style="display:none;margin-top:10px;background:var(--panel2)">
+        <div id="cellEditLabel" style="font-weight:600;margin-bottom:8px"></div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:160px">
+            <label>과목/내용</label>
+            <input type="text" id="cellSubject" placeholder="예: 수학">
+          </div>
+          <div class="field">
+            <label><input type="checkbox" id="cellSplit"> 분반수업</label>
+          </div>
+          <div class="field" id="cellSplitGroupField" style="flex:1;min-width:200px;display:none">
+            <label>분반 그룹명</label>
+            <input type="text" id="cellSplitGroup" placeholder="예: 1학년 수학분반">
+          </div>
+        </div>
+        <div class="toolbar">
+          <button id="btnCellSave" class="primary small">저장</button>
+          <button id="btnCellClear" class="danger small">공강으로 비우기</button>
+          <button id="btnCellCancel" class="small">취소</button>
+        </div>
+        <div class="hint">같은 교시·같은 분반 그룹명을 쓰는 다른 교사가 있으면, 그중 한 명이 출장일 때 나머지 분반과 합쳐서 보강하는 형태로 추천됩니다(맞교체 상대를 따로 찾지 않음).</div>
+      </div>
     </div>
   </section>
 
@@ -408,7 +431,17 @@ function searchRangeForTrip(trip, opts){
 // A(trip.teacherId)의 한 교시(slot)를 대신할 후보 목록을, 그 시점의 state.trips(이미 확정된
 // 교체들)를 반영해서 매번 새로 계산한다. recommendForTrip(화면 표시)와 autoAssignTrip(일괄 자동
 // 배정)이 같은 로직을 공유 — 자동 배정 중 앞 교시에서 쓴 교사/시간은 뒤 교시 계산에 즉시 반영된다.
+// 분반수업으로 표시된 교시는 맞교체를 찾지 않고, 같은 시간에 같은 분반 그룹을 진행 중인 다른
+// 교사에게 합쳐서 보강하는 방식(computeMergeCandidates)만 사용한다.
 function computeCandidatesForSlot(A, trip, slot, range){
+  const aCell = getBaseCell(A.id, slot.w, slot.p);
+  if(aCell && aCell.split && aCell.splitGroup){
+    return computeMergeCandidates(A, trip, slot);
+  }
+  return computeSwapCandidates(A, trip, slot, range);
+}
+
+function computeSwapCandidates(A, trip, slot, range){
   const candidates = [];
   for(const B of state.teachers){
     if(B.id===A.id) continue;
@@ -432,7 +465,7 @@ function computeCandidatesForSlot(A, trip, slot, range){
       }
     }
     partnerOptions.sort((a,b)=>b.score-a.score);
-    candidates.push({ teacherId: B.id, partnerOptions, coverOnly: partnerOptions.length===0 });
+    candidates.push({ teacherId: B.id, mode: partnerOptions.length>0?'swap':'cover', partnerOptions });
   }
   candidates.sort((a,b)=>{
     const aHas = a.partnerOptions.length>0 ? 1:0, bHas = b.partnerOptions.length>0 ? 1:0;
@@ -440,6 +473,32 @@ function computeCandidatesForSlot(A, trip, slot, range){
     return (b.partnerOptions[0]?.score||0) - (a.partnerOptions[0]?.score||0);
   });
   return candidates;
+}
+
+// 같은 (날짜·요일·교시)에 같은 분반 그룹명으로 수업 중인 다른 교사들을 찾아, 그 반에 합쳐서
+// 보강하는 형태로 제안한다. 상대 교사는 이미 자기 분반 수업 중이라 "비어있는지" 확인하지 않고,
+// 맞바꿀 시간을 찾지도 않는다(그 교시 하루치 보강일 뿐 나중에 갚을 필요가 없음).
+function computeMergeCandidates(A, trip, slot){
+  const aCell = getBaseCell(A.id, slot.w, slot.p);
+  const candidates = [];
+  for(const B of state.teachers){
+    if(B.id===A.id) continue;
+    if(isExcludedPair(A.id, B.id, trip)) continue;
+    const bCell = getBaseCell(B.id, slot.w, slot.p);
+    if(!bCell || !bCell.split || bCell.splitGroup !== aCell.splitGroup) continue;
+    if(getEffectiveBusy(B.id, slot.date, slot.w, slot.p) == null) continue; // B도 같은 시간에 자리를 비웠으면(출장 등) 합칠 수 없음
+    const alreadyMerged = countMergesInto(B.id, slot.date, slot.w, slot.p);
+    candidates.push({ teacherId: B.id, mode:'merge', partnerOptions: [], alreadyMerged });
+  }
+  candidates.sort((a,b)=> a.alreadyMerged - b.alreadyMerged); // 이미 많이 합쳐진 반보다 덜 합쳐진 반을 우선 추천
+  return candidates;
+}
+function countMergesInto(teacherId, date, w, p){
+  let n = 0;
+  for(const d of allConfirmedDecisions()){
+    if(d.mode==='merge' && matchSlot(d.covered, teacherId, date, w, p)) n++;
+  }
+  return n;
 }
 
 function recommendForTrip(trip, opts){
@@ -472,7 +531,7 @@ function autoAssignTrip(trip, opts){
     if(candidates.length===0){ skipped++; continue; }
     const top = candidates[0];
     const partnerOption = top.partnerOptions[0] || null;
-    if(confirmDecision(trip, slot, top.teacherId, partnerOption)) assigned++;
+    if(confirmDecision(trip, slot, top.teacherId, partnerOption, top.mode)) assigned++;
     else skipped++;
   }
   return {assigned, skipped};
@@ -481,7 +540,7 @@ function autoAssignTrip(trip, opts){
 /* =========================================================================
    확정 / 되돌리기
    ========================================================================= */
-function confirmDecision(trip, slot, teacherBId, partnerOption){
+function confirmDecision(trip, slot, teacherBId, partnerOption, mode){
   if(slotTouchedByAnyDecision(trip.teacherId, slot.date, slot.w, slot.p)){
     alert('이미 이 교시는 다른 교체로 처리되었습니다.');
     return false;
@@ -492,6 +551,7 @@ function confirmDecision(trip, slot, teacherBId, partnerOption){
   }
   const decision = {
     id: uid('dec'),
+    mode: mode || (partnerOption ? 'swap' : 'cover'), // 'swap' | 'cover' | 'merge'
     vacated: { teacherId: trip.teacherId, date: slot.date, w: slot.w, p: slot.p },
     covered: { teacherId: teacherBId, date: slot.date, w: slot.w, p: slot.p },
     reciprocalVacated: partnerOption ? { teacherId: teacherBId, date: partnerOption.date, w: partnerOption.w, p: partnerOption.p } : null,
@@ -786,6 +846,7 @@ function renderTimetableEditGrid(){
   const sel = document.getElementById('ttEditTeacher');
   const teacherId = sel.value;
   const wrap = document.getElementById('ttEditGrid');
+  closeCellEditPanel();
   if(!teacherId){ wrap.innerHTML = '<div class="muted">교사를 선택하세요.</div>'; return; }
   const periods = maxPeriods();
   let html = '<table><tr><th></th>' + WEEKDAY_LABELS.map(w=>`<th>${w}</th>`).join('') + '</tr>';
@@ -797,7 +858,8 @@ function renderTimetableEditGrid(){
         continue;
       }
       const cell = getBaseCell(teacherId, w, p);
-      html += `<td class="cell ${cell?'busy':''}" data-w="${w}" data-p="${p}">${cell?escapeHtml(cell.subject||''):''}</td>`;
+      const splitBadge = cell && cell.split ? `<div style="font-size:9px;color:var(--accent)" title="분반: ${escapeAttr(cell.splitGroup||'')}">분반 ${escapeHtml(cell.splitGroup||'')}</div>` : '';
+      html += `<td class="cell ${cell?'busy':''}" data-w="${w}" data-p="${p}">${cell?escapeHtml(cell.subject||''):''}${splitBadge}</td>`;
     }
     html += '</tr>';
   }
@@ -806,24 +868,54 @@ function renderTimetableEditGrid(){
 
   wrap.querySelectorAll('td.cell[data-w]').forEach(td=>{
     td.addEventListener('click', ()=>{
-      if(td.classList.contains('editing')) return;
       const w = parseInt(td.dataset.w,10), p = parseInt(td.dataset.p,10);
-      const cur = getBaseCell(teacherId, w, p);
-      td.classList.add('editing');
-      td.innerHTML = `<input type="text" value="${escapeAttr(cur?cur.subject:'')}">`;
-      const input = td.querySelector('input');
-      input.focus(); input.select();
-      const commit = ()=>{
-        const val = input.value.trim();
-        setBaseCell(teacherId, w, p, val ? {subject:val, className:''} : null);
-        saveState();
-        renderTimetableEditGrid();
-      };
-      input.addEventListener('blur', commit);
-      input.addEventListener('keydown', e=>{ if(e.key==='Enter') commit(); if(e.key==='Escape') renderTimetableEditGrid(); });
+      openCellEditPanel(teacherId, w, p);
     });
   });
 }
+
+function closeCellEditPanel(){
+  document.getElementById('cellEditPanel').style.display = 'none';
+}
+
+function openCellEditPanel(teacherId, w, p){
+  const cur = getBaseCell(teacherId, w, p);
+  const panel = document.getElementById('cellEditPanel');
+  const teacher = getTeacher(teacherId);
+  document.getElementById('cellEditLabel').textContent = `${teacher?teacher.name:''} · ${WEEKDAY_LABELS[w]}요일 ${p}교시`;
+  document.getElementById('cellSubject').value = cur ? (cur.subject||'') : '';
+  document.getElementById('cellSplit').checked = !!(cur && cur.split);
+  document.getElementById('cellSplitGroup').value = cur ? (cur.splitGroup||'') : '';
+  document.getElementById('cellSplitGroupField').style.display = (cur && cur.split) ? '' : 'none';
+  panel.style.display = '';
+  panel.dataset.teacherId = teacherId;
+  panel.dataset.w = w;
+  panel.dataset.p = p;
+  document.getElementById('cellSubject').focus();
+}
+
+document.getElementById('cellSplit').addEventListener('change', e=>{
+  document.getElementById('cellSplitGroupField').style.display = e.target.checked ? '' : 'none';
+});
+document.getElementById('btnCellSave').addEventListener('click', ()=>{
+  const panel = document.getElementById('cellEditPanel');
+  const teacherId = panel.dataset.teacherId, w = parseInt(panel.dataset.w,10), p = parseInt(panel.dataset.p,10);
+  const subject = document.getElementById('cellSubject').value.trim();
+  const split = document.getElementById('cellSplit').checked;
+  const splitGroup = document.getElementById('cellSplitGroup').value.trim();
+  if(!subject){ alert('과목/내용을 입력하거나, 수업이 없으면 "공강으로 비우기"를 누르세요.'); return; }
+  if(split && !splitGroup){ alert('분반수업으로 표시하려면 분반 그룹명을 입력하세요(같은 그룹명을 쓰는 다른 교사와 짝지어집니다).'); return; }
+  setBaseCell(teacherId, w, p, { subject, className:'', split, splitGroup: split?splitGroup:'' });
+  saveState();
+  renderTimetableEditGrid();
+});
+document.getElementById('btnCellClear').addEventListener('click', ()=>{
+  const panel = document.getElementById('cellEditPanel');
+  setBaseCell(panel.dataset.teacherId, parseInt(panel.dataset.w,10), parseInt(panel.dataset.p,10), null);
+  saveState();
+  renderTimetableEditGrid();
+});
+document.getElementById('btnCellCancel').addEventListener('click', closeCellEditPanel);
 document.getElementById('ttEditTeacher').addEventListener('change', renderTimetableEditGrid);
 
 /* =========================================================================
@@ -917,30 +1009,44 @@ function renderTrips(){
         row.className = 'slotrow';
         const origCell = r.baseCell || getBaseCell(trip.teacherId, r.slot.w, r.slot.p);
         const label = `${r.slot.date} (${WEEKDAY_LABELS[r.slot.w]}) ${r.slot.p}교시 — ${escapeHtml(origCell?origCell.subject:'')}`;
+        const aCell = getBaseCell(trip.teacherId, r.slot.w, r.slot.p);
+        const isSplitSlot = !!(aCell && aCell.split && aCell.splitGroup);
         if(r.decided){
           const dec = r.decision;
           const B = getTeacher(dec.covered.teacherId);
-          row.innerHTML = `<div class="head"><div>${label}</div><div class="decided">확정: ${escapeHtml(B?B.name:'?')} 선생님` +
-            (dec.reciprocalVacated ? ` ↔ ${dec.reciprocalVacated.date}(${WEEKDAY_LABELS[dec.reciprocalVacated.w]}) ${dec.reciprocalVacated.p}교시` : ' (단순 대체)') +
-            `</div></div><div class="toolbar"><button class="btnUndo small danger">되돌리기</button></div>`;
+          let decText;
+          if(dec.mode==='merge') decText = `합반 보강: ${escapeHtml(B?B.name:'?')} 선생님 반(분반 "${escapeHtml(aCell?aCell.splitGroup:'')}")과 합쳐서 진행`;
+          else if(dec.mode==='swap') decText = `${escapeHtml(B?B.name:'?')} 선생님과 맞교체 ↔ ${dec.reciprocalVacated.date}(${WEEKDAY_LABELS[dec.reciprocalVacated.w]}) ${dec.reciprocalVacated.p}교시`;
+          else decText = `${escapeHtml(B?B.name:'?')} 선생님 (단순 대체)`;
+          row.innerHTML = `<div class="head"><div>${label}</div><div class="decided">확정: ${decText}</div></div><div class="toolbar"><button class="btnUndo small danger">되돌리기</button></div>`;
           row.querySelector('.btnUndo').addEventListener('click', ()=>{ undoDecision(trip, dec.id); renderReco(); renderTrips(); renderHistory(); });
         } else {
           let candHtml = '';
           if(r.candidates.length===0){
-            candHtml = '<div class="muted">조건(제외 교사, 전문교과 그룹)을 만족하는 후보가 없습니다. 조건을 다시 확인하거나 직접 지정하세요.</div>';
+            candHtml = isSplitSlot
+              ? '<div class="muted">같은 분반 그룹명을 쓰는 다른 교사가 없습니다(제외 설정이나 분반 그룹명을 확인하세요). 직접 지정하세요.</div>'
+              : '<div class="muted">조건(제외 교사, 전문교과 그룹)을 만족하는 후보가 없습니다. 조건을 다시 확인하거나 직접 지정하세요.</div>';
           }
-          row.innerHTML = `<div class="head"><div>${label}</div></div><div class="candlist"></div>${candHtml}
+          const splitBadge = isSplitSlot ? ` <span class="badge spec">분반: ${escapeHtml(aCell.splitGroup)}</span>` : '';
+          row.innerHTML = `<div class="head"><div>${label}${splitBadge}</div></div><div class="candlist"></div>${candHtml}
             <div class="toolbar"><button class="btnManual small">직접 지정</button></div>`;
           const cl = row.querySelector('.candlist');
           r.candidates.slice(0,6).forEach(c=>{
             const B = getTeacher(c.teacherId);
             const cand = document.createElement('div');
             cand.className = 'cand';
-            if(c.coverOnly){
+            if(c.mode==='merge'){
+              cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> <span class="badge spec">분반 합반 보강</span>` +
+                (c.alreadyMerged>0 ? ` <span class="badge warn">이미 ${c.alreadyMerged}개 분반 합쳐짐</span>` : '') +
+                `</div><div class="opt"><button class="btnPick small primary">이 반과 합쳐서 보강 확정</button></div>`;
+              cand.querySelector('.btnPick').addEventListener('click', ()=>{
+                if(confirmDecision(trip, r.slot, c.teacherId, null, 'merge')){ renderReco(); renderTrips(); renderHistory(); }
+              });
+            } else if(c.mode==='cover'){
               cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> <span class="badge warn">맞교체 상대 없음(단순 대체만 가능)</span></div>
                 <div class="opt"><button class="btnPick small primary">이 교사로 단순 대체 확정</button></div>`;
               cand.querySelector('.btnPick').addEventListener('click', ()=>{
-                if(confirmDecision(trip, r.slot, c.teacherId, null)){ renderReco(); renderTrips(); renderHistory(); }
+                if(confirmDecision(trip, r.slot, c.teacherId, null, 'cover')){ renderReco(); renderTrips(); renderHistory(); }
               });
             } else {
               cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> <span class="badge ok">맞교체 가능 ${c.partnerOptions.length}건</span></div>`;
@@ -951,7 +1057,7 @@ function renderTrips(){
                 b.className = 'small';
                 b.textContent = `${opt.date}(${WEEKDAY_LABELS[opt.w]}) ${opt.p}교시${opt.inRange?'':' [기간 밖]'} 와 교체`;
                 b.addEventListener('click', ()=>{
-                  if(confirmDecision(trip, r.slot, c.teacherId, opt)){ renderReco(); renderTrips(); renderHistory(); }
+                  if(confirmDecision(trip, r.slot, c.teacherId, opt, 'swap')){ renderReco(); renderTrips(); renderHistory(); }
                 });
                 optWrap.appendChild(b);
               });
@@ -1010,6 +1116,20 @@ function openManualAssign(trip, slot, onDone){
 /* =========================================================================
    교체 내역
    ========================================================================= */
+function decisionTypeLabel(d){
+  if(d.mode==='merge') return '분반 합반';
+  if(d.mode==='swap') return '맞교체';
+  return '단순 대체';
+}
+function decisionDetailLabel(d, trip){
+  if(d.mode==='merge'){
+    const aCell = getBaseCell(d.vacated.teacherId, d.vacated.w, d.vacated.p);
+    return `분반그룹 "${aCell?aCell.splitGroup||'':''}" 합반`;
+  }
+  if(d.mode==='swap' && d.reciprocalVacated) return `${d.reciprocalVacated.date}(${WEEKDAY_LABELS[d.reciprocalVacated.w]}) ${d.reciprocalVacated.p}교시`;
+  return '-';
+}
+
 function renderHistory(){
   const rows = [];
   for(const trip of state.trips){
@@ -1019,7 +1139,7 @@ function renderHistory(){
       rows.push({
         date: d.vacated.date, w: d.vacated.w, p: d.vacated.p,
         teacherA: A?A.name:'?', teacherB: B?B.name:'?',
-        reciprocal: d.reciprocalVacated ? `${d.reciprocalVacated.date}(${WEEKDAY_LABELS[d.reciprocalVacated.w]}) ${d.reciprocalVacated.p}교시` : '단순 대체',
+        type: decisionTypeLabel(d), detail: decisionDetailLabel(d, trip),
         tripTitle: trip.title, confirmedAt: d.confirmedAt, tripId: trip.id, decId: d.id
       });
     }
@@ -1027,9 +1147,9 @@ function renderHistory(){
   rows.sort((a,b)=>a.date.localeCompare(b.date));
   const wrap = document.getElementById('historyTable');
   if(rows.length===0){ wrap.innerHTML = '<div class="muted">확정된 교체가 없습니다.</div>'; return; }
-  let html = '<table><tr><th>날짜</th><th>요일</th><th>교시</th><th>원래 교사</th><th>대체 교사</th><th>맞교체 상대 시간</th><th>사유</th><th></th></tr>';
+  let html = '<table><tr><th>날짜</th><th>요일</th><th>교시</th><th>원래 교사</th><th>대체 교사</th><th>유형</th><th>상세</th><th>사유</th><th></th></tr>';
   for(const r of rows){
-    html += `<tr><td>${r.date}</td><td>${WEEKDAY_LABELS[r.w]}</td><td>${r.p}</td><td>${escapeHtml(r.teacherA)}</td><td>${escapeHtml(r.teacherB)}</td><td>${escapeHtml(r.reciprocal)}</td><td>${escapeHtml(r.tripTitle||'')}</td>` +
+    html += `<tr><td>${r.date}</td><td>${WEEKDAY_LABELS[r.w]}</td><td>${r.p}</td><td>${escapeHtml(r.teacherA)}</td><td>${escapeHtml(r.teacherB)}</td><td>${escapeHtml(r.type)}</td><td>${escapeHtml(r.detail)}</td><td>${escapeHtml(r.tripTitle||'')}</td>` +
       `<td><button class="small danger btnHUndo" data-trip="${r.tripId}" data-dec="${r.decId}">되돌리기</button></td></tr>`;
   }
   html += '</table>';
@@ -1045,7 +1165,7 @@ function renderHistory(){
 }
 
 document.getElementById('btnExportCsv').addEventListener('click', ()=>{
-  const rows = [['날짜','요일','교시','원래교사','대체교사','맞교체상대시간','사유']];
+  const rows = [['날짜','요일','교시','원래교사','대체교사','유형','상세','사유']];
   for(const trip of state.trips){
     const A = getTeacher(trip.teacherId);
     for(const d of (trip.decisions||[])){
@@ -1053,7 +1173,7 @@ document.getElementById('btnExportCsv').addEventListener('click', ()=>{
       rows.push([
         d.vacated.date, WEEKDAY_LABELS[d.vacated.w], d.vacated.p,
         A?A.name:'', B?B.name:'',
-        d.reciprocalVacated ? `${d.reciprocalVacated.date}(${WEEKDAY_LABELS[d.reciprocalVacated.w]}) ${d.reciprocalVacated.p}교시` : '단순대체',
+        decisionTypeLabel(d), decisionDetailLabel(d, trip),
         trip.title||''
       ]);
     }
