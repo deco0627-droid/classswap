@@ -691,6 +691,25 @@ function autoAssignTrip(trip, opts){
   return {assigned, skipped};
 }
 
+// 장기 병휴가처럼 "이 요일(·교시)은 계속 OO 선생님이 대신한다"가 이미 정해져 있을 때, 추천 엔진을
+// 거치지 않고 조건에 맞는 아직 미확정 교시들을 전부 그 교사로 단순 대체 확정한다. 제외 설정·전문
+// 교과 그룹 같은 자동 조건은 확인하지 않는다(이미 사람이 정한 사항이므로) — 호출하는 쪽에서 필요시
+// 제외 경고만 한 번 보여준다. 한 번 배정된 교시는 getEffectiveBusy에 바로 반영되어, 이후 다른
+// 출장 건의 후보 검색에서 이 교사가 그 시간엔 이미 바쁜 것으로 정확히 제외된다.
+function bulkAssignFixedTeacher(trip, teacherId, weekdayFilter, periodFilter){
+  const A = getTeacher(trip.teacherId);
+  let assigned=0, skipped=0;
+  for(const slot of trip.affected){
+    if(weekdayFilter!=null && slot.w!==weekdayFilter) continue;
+    if(periodFilter!=null && !slot.periods.includes(periodFilter)) continue;
+    const already = (trip.decisions||[]).find(d=>matchSlot(d.vacated, A.id, slot.date, slot.w, slot.periods[0]));
+    if(already) continue;
+    if(confirmDecision(trip, slot, teacherId, null, 'cover')) assigned++;
+    else skipped++;
+  }
+  return {assigned, skipped};
+}
+
 /* =========================================================================
    확정 / 되돌리기
    ========================================================================= */
@@ -1468,11 +1487,29 @@ function renderTrips(){
         <button class="btnDeleteTrip small danger" style="margin-left:auto">출장 삭제</button>
       </div>
       <div class="hint">자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.</div>
+      <div class="card" style="background:var(--panel);margin-top:10px">
+        <div style="font-weight:600;margin-bottom:6px">이미 정해진 교사로 일괄 배정</div>
+        <div class="hint" style="margin-top:0">장기 병휴가처럼 "이 요일 이 교시는 OO 선생님이 계속 대신한다"가 이미 정해져 있을 때, 추천을 거치지 않고 아직 확정 안 된 교시들에 한 번에 단순 대체로 지정합니다. 이렇게 지정해두면 다른 출장 건을 등록할 때도 그 선생님이 이 시간엔 이미 바쁜 것으로 정확히 반영됩니다.</div>
+        <div class="row" style="align-items:flex-end;margin-top:6px">
+          <div class="field"><label>대체할 교사</label><select class="fixedTeacher"></select></div>
+          <div class="field"><label>적용할 요일</label>
+            <select class="fixedWeekday">
+              <option value="">전체 요일</option>
+              ${WEEKDAY_LABELS.map((wl,wi)=>`<option value="${wi}">${wl}요일만</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>적용할 교시(선택)</label><input type="number" class="fixedPeriod" min="1" style="width:80px" placeholder="비우면 전체"></div>
+          <button class="btnFixedAssign small primary">미확정 교시 일괄 배정</button>
+        </div>
+      </div>
       <div class="recoWrap"></div>
     `;
     det.appendChild(body);
     wrap.appendChild(det);
     body.querySelector('.selModeFilter').value = trip.modeFilter || 'all';
+    body.querySelector('.fixedTeacher').innerHTML = state.teachers
+      .filter(t=>t.id!==trip.teacherId)
+      .map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
 
     const renderReco = ()=>{
       const expand = body.querySelector('.chkExpand').checked;
@@ -1566,6 +1603,20 @@ function renderTrips(){
       let msg = `${assigned}건 자동 배정 완료.`;
       if(skipped>0) msg += ` ${skipped}건은 조건에 맞는 후보가 없어 건너뛰었습니다(아래에서 직접 지정 가능).`;
       alert(msg);
+    });
+    body.querySelector('.btnFixedAssign').addEventListener('click', ()=>{
+      const teacherId = body.querySelector('.fixedTeacher').value;
+      if(!teacherId){ alert('대체할 교사를 먼저 등록하세요.'); return; }
+      const wVal = body.querySelector('.fixedWeekday').value;
+      const weekdayFilter = wVal==='' ? null : parseInt(wVal,10);
+      const pVal = body.querySelector('.fixedPeriod').value.trim();
+      const periodFilter = pVal ? parseInt(pVal,10) : null;
+      if(isExcludedPair(trip.teacherId, teacherId, trip)){
+        if(!confirm('이 교사는 제외 설정되어 있습니다. 그래도 일괄 배정할까요?')) return;
+      }
+      const { assigned, skipped } = bulkAssignFixedTeacher(trip, teacherId, weekdayFilter, periodFilter);
+      renderReco(); renderTrips(); renderHistory();
+      alert(`${assigned}건을 지정한 교사로 일괄 배정했습니다.` + (skipped>0 ? ` (이미 확정됐거나 조건에 안 맞는 ${skipped}건은 건너뜀)` : ''));
     });
     body.querySelector('.btnDeleteTrip').addEventListener('click', ()=>{
       if(!confirm('이 출장과 관련 교체 계획을 삭제할까요? 이미 확정된 교체도 함께 취소됩니다.')) return;
