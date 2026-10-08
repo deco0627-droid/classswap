@@ -972,11 +972,30 @@ function renderBulkSpecialized(){
     wrap.innerHTML = '<div class="muted">등록된 교사가 없습니다.</div>';
     return;
   }
-  wrap.innerHTML = state.teachers.map(t=>`
-    <label style="display:flex;align-items:center;gap:4px">
+  // 한눈에 보기 쉽게: 일반(인문)교과 / 전문교과(세부 그룹별) / 그룹 미지정 전문교과로 나눠서 보여준다.
+  const general = state.teachers.filter(t=>!t.specialized);
+  const specialized = state.teachers.filter(t=>t.specialized);
+  const groups = {}; // 그룹명 -> 교사 배열
+  const ungrouped = [];
+  for(const t of specialized){
+    const g = (t.specialtyGroup||'').trim();
+    if(!g){ ungrouped.push(t); continue; }
+    (groups[g] = groups[g] || []).push(t);
+  }
+  const chk = t => `<label style="display:flex;align-items:center;gap:4px">
       <input type="checkbox" value="${t.id}" class="bulkSpecChk">
-      ${escapeHtml(t.name)}${t.specialized?` <span class="badge spec" style="font-size:10px">전문${t.specialtyGroup?'·'+escapeHtml(t.specialtyGroup):''}</span>`:''}
-    </label>`).join('');
+      ${escapeHtml(t.name)}</label>`;
+  const section = (title, teachers, badgeClass) => teachers.length ? `
+    <div style="margin-top:8px">
+      <div style="font-weight:600;font-size:12px;color:var(--text-dim);margin-bottom:4px">${title} <span class="badge ${badgeClass||''}">${teachers.length}명</span></div>
+      <div class="row">${teachers.map(chk).join('')}</div>
+    </div>` : '';
+  let html = section('일반(인문)교과', general);
+  for(const g of Object.keys(groups).sort()){
+    html += section(`전문교과 · ${escapeHtml(g)}`, groups[g], 'spec');
+  }
+  html += section('전문교과 · 세부 그룹 미지정', ungrouped, 'spec');
+  wrap.innerHTML = html || '<div class="muted">교사가 없습니다.</div>';
 }
 document.getElementById('btnBulkSpecializedOn').addEventListener('click', ()=>{
   const ids = Array.from(document.querySelectorAll('#bulkSpecializedList .bulkSpecChk:checked')).map(cb=>cb.value);
