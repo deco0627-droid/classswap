@@ -506,11 +506,17 @@ function scorePair(slotX, slotY){
   return score;
 }
 
+// 맞교체 상대 교시를 찾을 기간. 출장 당일 자체는 교사가 없으니 애초에 옮겨갈 수 없어서(아래
+// computeSwapCandidates에서 별도로 제외) 트립 기간 앞뒤로 범위를 잡는다 — 트립 기간 "안"으로
+// 잡으면 하루짜리 출장은 항상 맞교체 후보가 0건이 되어버린다.
 function searchRangeForTrip(trip, opts){
   opts = opts || {};
+  const span = opts.expand ? 30 : 14;
+  const earliest = fmtISO(addDays(parseISO(trip.dateFrom), -span));
+  const today = fmtISO(new Date());
   return {
-    from: opts.expand ? fmtISO(addDays(parseISO(trip.dateFrom), -14)) : trip.dateFrom,
-    to:   opts.expand ? fmtISO(addDays(parseISO(trip.dateTo), 14))   : trip.dateTo
+    from: earliest > today ? earliest : today, // 이미 지난 날짜로는 수업을 옮길 수 없음
+    to:   fmtISO(addDays(parseISO(trip.dateTo), span))
   };
 }
 
@@ -542,11 +548,12 @@ function computeSwapCandidates(A, trip, slot, range){
         if(!isSwappableCell(getBaseCell(B.id, w2, p2))) continue; // B가 원래 (교환 가능한) 수업이 있는 교시만 맞교체 대상
         if(!groupCompatible(B, A)) continue; // B의 교시를 A가 대신할 수 있는지
         for(const d2 of datesForWeekdayInRange(w2, range.from, range.to)){
+          if(d2 >= trip.dateFrom && d2 <= trip.dateTo) continue; // 출장 기간 당일에는 A가 없으니 이 기간으로는 옮길 수 없음
           if(getEffectiveBusy(B.id, d2, w2, p2) == null) continue;
           if(getEffectiveBusy(A.id, d2, w2, p2)) continue; // A가 그 시간에 이미 수업 있음
           if(slotTouchedByAnyDecision(A.id, d2, w2, p2) || slotTouchedByAnyDecision(B.id, d2, w2, p2)) continue;
-          const inRange = (d2 >= trip.dateFrom && d2 <= trip.dateTo);
-          partnerOptions.push({date:d2, w:w2, p:p2, inRange, score: scorePair(slot, {date:d2,w:w2}) + (inRange?5:0)});
+          const timing = d2 < trip.dateFrom ? 'before' : 'after'; // 출장 전에 미리 할지, 출장 후에 할지
+          partnerOptions.push({date:d2, w:w2, p:p2, timing, score: scorePair(slot, {date:d2,w:w2})});
         }
       }
     }
@@ -1325,7 +1332,7 @@ function renderTrips(){
             <option value="cover">대체(보강)만</option>
           </select>
         </label>
-        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 기간 밖(±14일)에서도 찾기</label>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 더 넓게(출장 전후 ±30일) 찾기</label>
         <button class="btnDeleteTrip small danger" style="margin-left:auto">출장 삭제</button>
       </div>
       <div class="hint">자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.</div>
@@ -1391,7 +1398,8 @@ function renderTrips(){
               c.partnerOptions.slice(0,3).forEach(opt=>{
                 const b = document.createElement('button');
                 b.className = 'small';
-                b.textContent = `${opt.date}(${WEEKDAY_LABELS[opt.w]}) ${opt.p}교시${opt.inRange?'':' [기간 밖]'} 와 교체`;
+                const timingLabel = opt.timing==='before' ? ' [출장 전]' : ' [출장 후]';
+                b.textContent = `${opt.date}(${WEEKDAY_LABELS[opt.w]}) ${opt.p}교시${timingLabel}와 교체`;
                 b.addEventListener('click', ()=>{
                   if(confirmDecision(trip, r.slot, c.teacherId, opt, 'swap')){ renderReco(); renderTrips(); renderHistory(); }
                 });
