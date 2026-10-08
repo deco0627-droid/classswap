@@ -89,6 +89,7 @@
     <button id="btnExport" class="small">백업 내보내기(JSON)</button>
     <button id="btnImportState" class="small">백업 가져오기</button>
     <input type="file" id="fileImportState" accept="application/json" style="display:none">
+    <button id="btnResetAll" class="small danger">전체 초기화</button>
   </div>
 </header>
 <nav>
@@ -1317,6 +1318,18 @@ document.getElementById('fileImportState').addEventListener('change', e=>{
   };
   reader.readAsText(file);
   e.target.value = '';
+});
+
+document.getElementById('btnResetAll').addEventListener('click', ()=>{
+  const n = state.teachers.length, tr = state.trips.length;
+  if(n===0 && tr===0){ alert('이미 비어 있습니다.'); return; }
+  const msg = `정말 전체 초기화할까요?\n\n교사 ${n}명, 시간표, 출장·교체 기록 ${tr}건이 전부 삭제되고 되돌릴 수 없습니다.\n\n잘못 지웠을 때를 대비해 지금 상태를 먼저 "백업 내보내기(JSON)"로 저장해두는 걸 권장합니다.`;
+  if(!confirm(msg)) return;
+  if(!confirm('마지막 확인입니다. 정말 모두 삭제하고 빈 상태로 시작할까요?')) return;
+  state = defaultState();
+  saveState();
+  renderAll();
+  alert('전체 초기화했습니다. 새로 시간표를 가져오세요.');
 });
 
 /* =========================================================================
