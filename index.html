@@ -87,6 +87,7 @@
   </div>
   <div class="row">
     <button id="btnExport" class="small">백업 내보내기(JSON)</button>
+    <button id="btnExportShare" class="small">공유용 내보내기(교사·시간표만, 출장·교체 내역 제외)</button>
     <button id="btnImportState" class="small">백업 가져오기</button>
     <input type="file" id="fileImportState" accept="application/json" style="display:none">
     <button id="btnResetAll" class="small danger">전체 초기화</button>
@@ -1679,6 +1680,17 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   a.href = URL.createObjectURL(blob);
   a.download = `classswap_backup_${fmtISO(new Date())}.json`;
   a.click();
+});
+// 다른 사람에게 도구를 넘겨줄 때 쓰는 내보내기 — 교사 목록·시간표(+설정)는 그대로 두고, 내가 처리한
+// 출장·교체 내역(trips)만 빼서 상대방이 자기 학교 상황으로 깨끗하게 새로 시작할 수 있게 한다.
+document.getElementById('btnExportShare').addEventListener('click', ()=>{
+  const shareState = { settings: state.settings, teachers: state.teachers, timetable: state.timetable, trips: [] };
+  const blob = new Blob([JSON.stringify(shareState, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `classswap_공유용_${fmtISO(new Date())}.json`;
+  a.click();
+  alert('교사·시간표만 담긴 파일을 내보냈습니다(출장·교체 내역은 빠졌습니다). 이 파일을 index.html과 함께 전달하시고, 받는 분은 "백업 가져오기"로 불러오면 됩니다.');
 });
 document.getElementById('btnImportState').addEventListener('click', ()=> document.getElementById('fileImportState').click());
 document.getElementById('fileImportState').addEventListener('change', e=>{
