@@ -410,6 +410,12 @@
     </div>
 
     <div class="card">
+      <h2 style="margin:0 0 10px">선생님들이 요청한 교체</h2>
+      <div class="hint" style="margin-top:0">교사(일반) 역할 계정이 본인 화면에서 "요청하기"를 누르면 여기 뜹니다. 승인하면 그대로 확정되고, 거절하면 없어집니다.</div>
+      <div id="requestsWrap" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
       <h2 style="margin:0 0 10px">등록된 출장</h2>
       <div id="tripList"></div>
     </div>
@@ -568,6 +574,33 @@ function buildTeacherView(teacherId){
     }
   }
   decisions.sort((a,b)=> a.date.localeCompare(b.date));
+  // 이 선생님 본인 출장 중 아직 미확정인 교시들 + 추천 후보. "교사가 직접 교체를 요청"하는 화면에
+  // 쓰이는데, 다른 교사 정보 노출을 최소화하려고 후보의 "이름·맞교체 날짜"만 담고 전체 시간표나
+  // 다른 출장 내역 같은 건 절대 넣지 않는다.
+  const pendingSlots = [];
+  for(const trip of state.trips){
+    if(trip.teacherId !== teacherId) continue;
+    const results = recommendForTrip(trip, {expand:false});
+    for(const r of results){
+      if(r.decided) continue;
+      const candidates = r.candidates.slice(0,5).map(c=>{
+        const B = getTeacher(c.teacherId);
+        const top = c.partnerOptions[0] || null;
+        return {
+          candidateTeacherId: c.teacherId,
+          candidateName: B ? B.name : '?',
+          mode: c.mode,
+          partnerBlock: top ? { date: top.date, w: top.w, periods: top.periods } : null
+        };
+      });
+      pendingSlots.push({
+        tripId: trip.id, tripTitle: trip.title || '',
+        date: r.slot.date, w: r.slot.w, periods: r.slot.periods,
+        origSubject: r.baseCell ? r.baseCell.subject : '',
+        candidates
+      });
+    }
+  }
   return {
     teacherName: t.name,
     teacherSubject: t.subject || '',
@@ -575,7 +608,8 @@ function buildTeacherView(teacherId){
     periodsByDay: state.settings.periodsByDay,
     periodTimes: state.settings.periodTimes,
     timetable: state.timetable[teacherId] || {},
-    decisions
+    decisions,
+    pendingSlots
   };
 }
 function publishAllTeacherViews(){
@@ -2303,6 +2337,11 @@ async function fetchApprovalInfo(email){
 let myRole = null; // 'admin' | 'teacher'
 let myLinkedTeacherId = null;
 let unsubscribeTeacherView = null;
+let lastTeacherViewData = null; // 가장 최근에 받은 classswap_myview 문서(요청 목록과 같이 다시 그릴 때 씀)
+let myRequests = [];            // 교사 본인이 올린 classswap_requests (실시간)
+let unsubscribeMyRequests = null;
+let allRequests = [];           // 관리자 화면: 전체 교사 요청(실시간)
+let unsubscribeRequests = null;
 
 // 예전(로그인 도입 전) 버전이 이 브라우저의 localStorage에 썼던 데이터 — Firebase로 바꾸면서
 // 더 이상 앱이 읽지 않게 됐을 뿐, 지운 적은 없어서 그대로 남아있을 가능성이 높다. Firestore가
@@ -2348,13 +2387,45 @@ function startTeacherViewListener(teacherId){
   if(unsubscribeTeacherView) unsubscribeTeacherView();
   let firstLoad = true;
   unsubscribeTeacherView = db.collection('classswap_myview').doc(teacherId).onSnapshot(snap=>{
-    renderTeacherView(snap.exists ? snap.data() : null);
+    lastTeacherViewData = snap.exists ? snap.data() : null;
+    renderTeacherView(lastTeacherViewData);
     if(firstLoad){ showGate('app'); firstLoad = false; }
   }, err=>{
     console.error('내 시간표 불러오기 실패', err);
     document.getElementById('teacherViewRoot').innerHTML = '<div class="card"><p>데이터를 불러오지 못했습니다: ' + escapeHtml(err.message) + '</p></div>';
     showGate('app');
   });
+}
+// 본인이 올린 교체 요청들(대기중/관리자가 처리하면 사라짐)을 실시간 구독. classswap_myview와는
+// 별도 컬렉션이라 둘 중 하나만 갱신돼도 화면을 다시 그릴 수 있게 각자 렌더를 호출한다.
+function startMyRequestsListener(teacherId){
+  if(unsubscribeMyRequests) unsubscribeMyRequests();
+  unsubscribeMyRequests = db.collection('classswap_requests').where('teacherId','==', teacherId).onSnapshot(snap=>{
+    myRequests = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    if(lastTeacherViewData) renderTeacherView(lastTeacherViewData);
+  }, err=>{
+    console.error('내 요청 목록 불러오기 실패', err);
+  });
+}
+// 교사 화면에서 "이 후보로 요청하기"를 누르면 호출 — 직접 state를 고치지 않고 요청만 남기고,
+// 관리자가 승인해야 실제로 반영된다(교사 계정은 classswap/state 쓰기 권한이 아예 없음).
+function requestOwnDecision(tripId, slot, candidate){
+  if(!myLinkedTeacherId || !currentUser) return;
+  db.collection('classswap_requests').add({
+    teacherId: myLinkedTeacherId,
+    tripId,
+    date: slot.date, w: slot.w, periods: slot.periods,
+    candidateTeacherId: candidate.candidateTeacherId,
+    candidateName: candidate.candidateName,
+    mode: candidate.mode,
+    partnerBlock: candidate.partnerBlock || null,
+    status: 'pending',
+    requestedBy: currentUser.email,
+    requestedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(err=>{ alert('요청 실패: ' + err.message); });
+}
+function cancelOwnRequest(requestId){
+  db.collection('classswap_requests').doc(requestId).delete().catch(err=>{ alert('취소 실패: ' + err.message); });
 }
 function roleLabel(role){
   return { vacated:'출장(공강)', covered:'대체로 들어감', reciprocalVacated:'맞교체로 내 자리 비움', reciprocalCovered:'맞교체로 대신 들어감' }[role] || role;
@@ -2386,20 +2457,65 @@ function renderTeacherView(view){
       }).join('') + '</table>';
   }
 
+  // 아직 미확정인 내 출장 교시들 + 추천 후보 — 후보를 골라 "요청하기"를 누르면 관리자 승인 대기로
+  // 들어간다. 이미 같은 교시에 대기 중인 요청이 있으면 후보 버튼 대신 대기 상태 + 취소 버튼만 보여준다.
+  let pendingHtml = '<div class="muted">현재 직접 처리할 미확정 교체가 없습니다.</div>';
+  if(view.pendingSlots && view.pendingSlots.length){
+    pendingHtml = view.pendingSlots.map(s=>{
+      const label = `${s.date} (${WEEKDAY_LABELS[s.w]}) ${s.periods.length>1 ? s.periods[0]+'~'+s.periods[s.periods.length-1]+'교시' : s.periods[0]+'교시'} — ${escapeHtml(s.origSubject||'')}${s.tripTitle?' · '+escapeHtml(s.tripTitle):''}`;
+      const myReq = myRequests.find(r=>r.tripId===s.tripId && r.date===s.date && r.w===s.w && JSON.stringify(r.periods)===JSON.stringify(s.periods));
+      let body;
+      if(myReq){
+        body = `<div class="hint" style="margin-top:4px">요청됨: <b>${escapeHtml(myReq.candidateName)}</b> 선생님(${myReq.mode==='swap'?'맞교체':'대체'}) — 관리자 승인 대기 중</div>
+          <button class="small danger btnCancelReq" data-req="${myReq.id}" style="margin-top:4px">요청 취소</button>`;
+      } else if(!s.candidates || s.candidates.length===0){
+        body = `<div class="muted">지금은 조건에 맞는 후보가 없습니다. 관리자에게 직접 문의하세요.</div>`;
+      } else {
+        body = s.candidates.map((c,i)=>{
+          const partnerTxt = c.partnerBlock ? ` ↔ ${c.partnerBlock.date}(${WEEKDAY_LABELS[c.partnerBlock.w]}) ${c.partnerBlock.periods.length>1 ? c.partnerBlock.periods[0]+'~'+c.partnerBlock.periods[c.partnerBlock.periods.length-1]+'교시' : c.partnerBlock.periods[0]+'교시'}` : '';
+          return `<button class="small btnReqCandidate" data-idx="${i}" style="margin:2px 4px 2px 0">${escapeHtml(c.candidateName)} 선생님 (${c.mode==='swap'?'맞교체':'대체'})${escapeHtml(partnerTxt)}</button>`;
+        }).join('');
+      }
+      return `<div class="card" style="background:var(--panel);margin-bottom:8px">
+        <div style="font-weight:600">${label}</div>
+        <div style="margin-top:6px" data-slot="${escapeHtml(JSON.stringify({tripId:s.tripId,date:s.date,w:s.w,periods:s.periods}))}">${body}</div>
+      </div>`;
+    }).join('');
+  }
+
   root.innerHTML = `
     <div class="card"><h2>${escapeHtml(view.teacherName)} 선생님 시간표</h2>
-      <div class="hint" style="margin-top:0">읽기 전용입니다. 수정은 관리자에게 요청하세요.</div>
+      <div class="hint" style="margin-top:0">읽기 전용입니다. 전체 시간표 수정은 관리자에게 요청하세요.</div>
       <div style="overflow-x:auto">${grid}</div>
+    </div>
+    <div class="card"><h2>내 교체 요청</h2>
+      <div class="hint" style="margin-top:0">아래 후보 중 하나를 골라 "요청하기"를 누르면 관리자에게 전달되고, 관리자가 승인해야 실제로 확정됩니다. 후보 이름과 맞교체 날짜 외 다른 선생님 정보는 보이지 않습니다.</div>
+      ${pendingHtml}
     </div>
     <div class="card"><h2>내 수업 변경 내역</h2><div style="overflow-x:auto">${historyHtml}</div></div>
   `;
+  root.querySelectorAll('.btnReqCandidate').forEach(btn=>{
+    const wrap = btn.closest('[data-slot]');
+    const slotInfo = JSON.parse(wrap.dataset.slot);
+    const sObj = view.pendingSlots.find(s=>s.tripId===slotInfo.tripId && s.date===slotInfo.date && s.w===slotInfo.w && JSON.stringify(s.periods)===JSON.stringify(slotInfo.periods));
+    const candidate = sObj.candidates[parseInt(btn.dataset.idx,10)];
+    btn.addEventListener('click', ()=>{
+      if(!confirm(`${candidate.candidateName} 선생님(${candidate.mode==='swap'?'맞교체':'대체'})으로 요청할까요? 관리자 승인 후 확정됩니다.`)) return;
+      requestOwnDecision(slotInfo.tripId, { date: slotInfo.date, w: slotInfo.w, periods: slotInfo.periods }, candidate);
+    });
+  });
+  root.querySelectorAll('.btnCancelReq').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ if(confirm('요청을 취소할까요?')) cancelOwnRequest(btn.dataset.req); });
+  });
 }
 
 auth.onAuthStateChanged(async user=>{
   if(!user){
-    currentUser = null; myRole = null; myLinkedTeacherId = null;
+    currentUser = null; myRole = null; myLinkedTeacherId = null; lastTeacherViewData = null; myRequests = []; allRequests = [];
     if(unsubscribeStateListener){ unsubscribeStateListener(); unsubscribeStateListener = null; }
     if(unsubscribeTeacherView){ unsubscribeTeacherView(); unsubscribeTeacherView = null; }
+    if(unsubscribeMyRequests){ unsubscribeMyRequests(); unsubscribeMyRequests = null; }
+    if(unsubscribeRequests){ unsubscribeRequests(); unsubscribeRequests = null; }
     document.getElementById('userInfo').style.display = 'none';
     document.getElementById('appShell').style.display = 'none';
     document.getElementById('teacherViewRoot').style.display = 'none';
@@ -2424,6 +2540,7 @@ auth.onAuthStateChanged(async user=>{
     document.getElementById('appShell').style.display = '';
     document.getElementById('teacherViewRoot').style.display = 'none';
     startStateListener();
+    startRequestsListener();
     renderApprovedEmails();
   } else {
     document.getElementById('appShell').style.display = 'none';
@@ -2434,8 +2551,63 @@ auth.onAuthStateChanged(async user=>{
       return;
     }
     startTeacherViewListener(myLinkedTeacherId);
+    startMyRequestsListener(myLinkedTeacherId);
   }
 });
+
+// 관리자 화면: 교사들이 올린 교체 요청을 실시간으로 구독해서 "출장·교체 내역" 탭 위에 보여준다.
+function startRequestsListener(){
+  if(unsubscribeRequests) unsubscribeRequests();
+  unsubscribeRequests = db.collection('classswap_requests').onSnapshot(snap=>{
+    allRequests = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    renderRequests();
+  }, err=>{ console.error('교사 요청 목록 불러오기 실패', err); });
+}
+function renderRequests(){
+  const wrap = document.getElementById('requestsWrap');
+  if(!wrap) return;
+  if(allRequests.length===0){ wrap.innerHTML = '<div class="muted">대기 중인 교사 요청이 없습니다.</div>'; return; }
+  // 최근 요청이 위로 오게(클라이언트에서 정렬 — serverTimestamp가 아직 안 붙은 방금 생성된 문서는 맨 위).
+  const sorted = [...allRequests].sort((a,b)=>{
+    const ta = a.requestedAt && a.requestedAt.toMillis ? a.requestedAt.toMillis() : Infinity;
+    const tb = b.requestedAt && b.requestedAt.toMillis ? b.requestedAt.toMillis() : Infinity;
+    return tb - ta;
+  });
+  wrap.innerHTML = '';
+  for(const r of sorted){
+    const trip = state.trips.find(t=>t.id===r.tripId);
+    const A = trip ? getTeacher(trip.teacherId) : null;
+    const B = getTeacher(r.candidateTeacherId);
+    const periodsLabel = r.periods.length>1 ? `${r.periods[0]}~${r.periods[r.periods.length-1]}교시` : `${r.periods[0]}교시`;
+    const partnerTxt = r.partnerBlock ? ` ↔ ${r.partnerBlock.date}(${WEEKDAY_LABELS[r.partnerBlock.w]}) ${r.partnerBlock.periods.length>1 ? r.partnerBlock.periods[0]+'~'+r.partnerBlock.periods[r.partnerBlock.periods.length-1]+'교시' : r.partnerBlock.periods[0]+'교시'}` : '';
+    const row = document.createElement('div');
+    row.className = 'card';
+    row.style.cssText = 'background:var(--panel);margin-bottom:8px';
+    row.innerHTML = `<div><b>${A?escapeHtml(A.name):'(출장 건 삭제됨)'}</b> 선생님 — ${r.date}(${WEEKDAY_LABELS[r.w]}) ${periodsLabel} → <b>${B?escapeHtml(B.name):'?'}</b> 선생님 (${r.mode==='swap'?'맞교체':'대체'})${escapeHtml(partnerTxt)}</div>
+      <div class="hint" style="margin-top:2px">요청자: ${escapeHtml(r.requestedBy||'')}</div>
+      <div class="toolbar" style="margin-top:6px">
+        <button class="small primary btnApproveReq">승인</button>
+        <button class="small danger btnRejectReq">거절</button>
+      </div>`;
+    row.querySelector('.btnApproveReq').addEventListener('click', ()=>approveRequest(r, trip));
+    row.querySelector('.btnRejectReq').addEventListener('click', ()=>{ if(confirm('이 요청을 거절할까요?')) db.collection('classswap_requests').doc(r.id).delete(); });
+    wrap.appendChild(row);
+  }
+}
+function approveRequest(r, trip){
+  if(!trip){
+    alert('연결된 출장 건을 찾을 수 없습니다(이미 삭제됨). 요청을 거절 처리합니다.');
+    db.collection('classswap_requests').doc(r.id).delete();
+    return;
+  }
+  const slot = { date: r.date, w: r.w, periods: r.periods };
+  const ok = confirmDecision(trip, slot, r.candidateTeacherId, r.partnerBlock || null, r.mode);
+  if(ok){
+    db.collection('classswap_requests').doc(r.id).delete();
+    renderTrips(); renderHistory();
+  }
+  // 실패 시 confirmDecision이 이미 사유를 alert로 보여준다 — 요청은 그대로 남겨서 다시 시도/거절 가능.
+}
 
 // 승인된 이메일(admins 컬렉션) 추가/삭제 — 로그인·접근 가능한 사람 목록을 화면에서 직접 관리.
 function fillTeacherSelect(sel, selectedId){
