@@ -883,11 +883,11 @@ function renderTeachers(){
       const periods = maxPeriods();
       let bHtml = '<table><tr><th></th>' + WEEKDAY_LABELS.map(wl=>`<th class="wd-label">${wl}</th>`).join('') + '</tr>';
       for(let p=1; p<=periods; p++){
-        bHtml += `<tr><th style="font-size:12px">${p}교시<br><span class="muted" style="font-weight:normal">${(state.settings.periodTimes&&state.settings.periodTimes[p])?state.settings.periodTimes[p].start+"~"+state.settings.periodTimes[p].end:""}</span></th>`;
+        bHtml += `<tr><th style="padding:10px 8px"><div style="font-size:14px">${p}교시</div><div class="muted" style="font-weight:normal;font-size:14px">${(state.settings.periodTimes&&state.settings.periodTimes[p])?state.settings.periodTimes[p].start+"~"+state.settings.periodTimes[p].end:""}</div></th>`;
         for(let w=0; w<5; w++){
           if(p > periodsFor(w)){ bHtml += '<td></td>'; continue; }
           const checked = (t.blockedSlots||[]).includes(slotKey(w,p));
-          bHtml += `<td style="text-align:center;padding:10px"><input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''} style="transform:scale(2);cursor:pointer"></td>`;
+          bHtml += `<td style="text-align:center;padding:10px"><input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''} style="transform:scale(1.6);cursor:pointer"></td>`;
         }
         bHtml += '</tr>';
       }
