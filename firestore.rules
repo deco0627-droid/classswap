@@ -1,22 +1,49 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function myEmail() { return request.auth.token.email.lower(); }
+    function myAdminDoc() { return get(/databases/$(database)/documents/admins/$(myEmail())); }
+
     // 로그인했고(구글), edu.jkjin@gmail.com 고정 계정이거나 admins 컬렉션에 등록된 이메일만 승인.
     function isApproved() {
       return request.auth != null && (
-        request.auth.token.email.lower() == 'edu.jkjin@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))
+        myEmail() == 'edu.jkjin@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(myEmail()))
       );
     }
-
-    // 교사·시간표·출장 데이터 전체가 들어있는 문서 하나.
-    match /classswap/{docId} {
-      allow read, write: if isApproved();
+    // 관리자 역할: 고정 계정이거나, admins 문서의 role 필드가 'admin'인 경우만.
+    // (role 필드가 아예 없는 예전 문서는 .get()의 기본값 'teacher'로 처리돼 관리자가 아님)
+    function isAdminRole() {
+      return request.auth != null && (
+        myEmail() == 'edu.jkjin@gmail.com' ||
+        (exists(/databases/$(database)/documents/admins/$(myEmail())) && myAdminDoc().data.get('role', 'teacher') == 'admin')
+      );
+    }
+    function myTeacherId() {
+      return exists(/databases/$(database)/documents/admins/$(myEmail()))
+        ? myAdminDoc().data.get('linkedTeacherId', null)
+        : null;
     }
 
-    // 승인된 로그인 이메일 목록(문서 id = 소문자 이메일). 승인된 사람끼리 서로 추가/삭제 가능.
+    // 교사·시간표·출장 전체가 들어있는 문서. 관리자만 읽고 쓸 수 있다 — 교사(일반) 역할은
+    // 여기 절대 접근 못 하고, 대신 아래 classswap_myview에서 자기 것만 본다.
+    match /classswap/{docId} {
+      allow read, write: if isAdminRole();
+    }
+
+    // 승인 목록(문서 id = 소문자 이메일). 관리자는 전체를 보고 관리하고, 그 외 승인된 계정은
+    // 로그인 직후 "내 역할·내가 어느 교사인지" 확인을 위해 자기 자신의 문서만 조회 가능.
     match /admins/{email} {
-      allow read, write: if isApproved();
+      allow get: if isAdminRole() || (request.auth != null && myEmail() == email);
+      allow list: if isAdminRole();
+      allow write: if isAdminRole();
+    }
+
+    // 관리자가 저장할 때마다 교사별로 미리 만들어 발행하는 "내 시간표만" 보기 문서.
+    // 본인과 연결된 문서 하나만 읽을 수 있고, 쓰기는 관리자(발행 로직)만 — 교사 본인은 못 고친다.
+    match /classswap_myview/{teacherId} {
+      allow read: if isAdminRole() || (isApproved() && myTeacherId() == teacherId);
+      allow write: if isAdminRole();
     }
 
     // 그 외 경로는 전부 차단.
