@@ -205,6 +205,14 @@
             <input type="text" id="cellSplitGroup" placeholder="예: 1학년 수학분반">
           </div>
         </div>
+        <div id="cellSplitPartnersField" style="display:none;margin-top:10px">
+          <div class="row" style="align-items:center">
+            <label style="margin:0">같은 시간(요일·교시)에 수업 있는 다른 교사 — 체크한 교사도 같은 분반 그룹으로 한번에 표시</label>
+            <button type="button" id="btnSplitPartnersAll" class="small">전체 선택</button>
+            <button type="button" id="btnSplitPartnersNone" class="small">전체 해제</button>
+          </div>
+          <div id="cellSplitPartners" class="row" style="margin-top:6px"></div>
+        </div>
         <div class="toolbar">
           <button id="btnCellSave" class="primary small">저장</button>
           <button id="btnCellClear" class="danger small">공강으로 비우기</button>
@@ -1013,15 +1021,46 @@ function openCellEditPanel(teacherId, w, p){
   document.getElementById('cellSplit').checked = !!(cur && cur.split);
   document.getElementById('cellSplitGroup').value = cur ? (cur.splitGroup||'') : '';
   document.getElementById('cellSplitGroupField').style.display = (cur && cur.split) ? '' : 'none';
+  document.getElementById('cellSplitPartnersField').style.display = (cur && cur.split) ? '' : 'none';
   panel.style.display = '';
   panel.dataset.teacherId = teacherId;
   panel.dataset.w = w;
   panel.dataset.p = p;
+  renderCellSplitPartners(teacherId, w, p, cur);
   document.getElementById('cellSubject').focus();
+}
+
+// 같은 요일·교시에 수업이 있는 다른 교사들을 체크박스로 보여준다. 이미 같은 분반 그룹명으로
+// 묶여 있는 교사는 기본으로 체크해서, 나중에 다시 열었을 때 현재 묶음을 바로 확인/수정할 수 있다.
+function renderCellSplitPartners(teacherId, w, p, cur){
+  const wrap = document.getElementById('cellSplitPartners');
+  const curGroup = (cur && cur.splitGroup) || '';
+  const others = state.teachers
+    .filter(t => t.id !== teacherId)
+    .map(t => ({ t, cell: getBaseCell(t.id, w, p) }))
+    .filter(x => x.cell);
+  if(others.length===0){
+    wrap.innerHTML = '<div class="muted">같은 시간에 수업 있는 다른 교사가 없습니다.</div>';
+    return;
+  }
+  wrap.innerHTML = others.map(({t, cell})=>{
+    const checked = cell.split && curGroup && cell.splitGroup === curGroup;
+    return `<label style="display:flex;align-items:center;gap:4px">
+      <input type="checkbox" value="${t.id}" ${checked?'checked':''}>
+      ${escapeHtml(t.name)} <span class="muted">(${escapeHtml(cell.subject||'')})</span>
+    </label>`;
+  }).join('');
 }
 
 document.getElementById('cellSplit').addEventListener('change', e=>{
   document.getElementById('cellSplitGroupField').style.display = e.target.checked ? '' : 'none';
+  document.getElementById('cellSplitPartnersField').style.display = e.target.checked ? '' : 'none';
+});
+document.getElementById('btnSplitPartnersAll').addEventListener('click', ()=>{
+  document.querySelectorAll('#cellSplitPartners input[type=checkbox]').forEach(cb=>cb.checked=true);
+});
+document.getElementById('btnSplitPartnersNone').addEventListener('click', ()=>{
+  document.querySelectorAll('#cellSplitPartners input[type=checkbox]').forEach(cb=>cb.checked=false);
 });
 document.getElementById('btnCellSave').addEventListener('click', ()=>{
   const panel = document.getElementById('cellEditPanel');
@@ -1033,8 +1072,20 @@ document.getElementById('btnCellSave').addEventListener('click', ()=>{
   if(!subject){ alert('과목/내용을 입력하거나, 수업이 없으면 "공강으로 비우기"를 누르세요.'); return; }
   if(split && !splitGroup){ alert('분반수업으로 표시하려면 분반 그룹명을 입력하세요(같은 그룹명을 쓰는 다른 교사와 짝지어집니다).'); return; }
   setBaseCell(teacherId, w, p, { subject, className, split, splitGroup: split?splitGroup:'' });
+  // 체크한 다른 교사들도 같은 분반 그룹으로 한 번에 표시(각자 원래 과목/반은 그대로 두고 분반 정보만 추가)
+  let partnerCount = 0;
+  if(split){
+    document.querySelectorAll('#cellSplitPartners input[type=checkbox]:checked').forEach(cb=>{
+      const otherId = cb.value;
+      const otherCell = getBaseCell(otherId, w, p);
+      if(!otherCell) return;
+      setBaseCell(otherId, w, p, { ...otherCell, split:true, splitGroup });
+      partnerCount++;
+    });
+  }
   saveState();
   renderTimetableEditGrid();
+  if(partnerCount>0) alert(`${partnerCount}명의 교사를 같은 분반 그룹("${splitGroup}")으로 함께 표시했습니다.`);
 });
 document.getElementById('btnCellClear').addEventListener('click', ()=>{
   const panel = document.getElementById('cellEditPanel');
