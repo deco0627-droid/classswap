@@ -394,6 +394,15 @@ function expandRange(dateFrom, dateTo){
 function datesForWeekdayInRange(w, dateFrom, dateTo){
   return expandRange(dateFrom, dateTo).filter(d=>d.w===w).map(d=>d.date);
 }
+// 그 날짜가 속한 주(월~금)의 월요일/금요일을 구한다. 맞교체 상대를 "전주/다음주" 단위로 찾을 때 씀.
+function mondayOf(dateStr){
+  const d = parseISO(dateStr);
+  const offset = (d.getDay() + 6) % 7; // 월=0, 화=1, ... 일=6
+  return fmtISO(addDays(d, -offset));
+}
+function fridayOf(dateStr){
+  return fmtISO(addDays(parseISO(mondayOf(dateStr)), 4));
+}
 
 /* =========================================================================
    시간표 기본 데이터 접근
@@ -509,14 +518,18 @@ function scorePair(slotX, slotY){
 // 맞교체 상대 교시를 찾을 기간. 출장 당일 자체는 교사가 없으니 애초에 옮겨갈 수 없어서(아래
 // computeSwapCandidates에서 별도로 제외) 트립 기간 앞뒤로 범위를 잡는다 — 트립 기간 "안"으로
 // 잡으면 하루짜리 출장은 항상 맞교체 후보가 0건이 되어버린다.
+// 기본은 출장이 속한 주의 "바로 전주"와 "바로 다음주"(월~금)까지만 — 학교 현장에서 보강/교체는
+// 보통 전주나 다음주 안에서 처리하지, 멀리 떨어진 날짜로 잡지 않기 때문. "더 넓게"를 체크하면
+// 앞뒤 3주까지 넓힌다.
 function searchRangeForTrip(trip, opts){
   opts = opts || {};
-  const span = opts.expand ? 30 : 14;
-  const earliest = fmtISO(addDays(parseISO(trip.dateFrom), -span));
+  const weeks = opts.expand ? 3 : 1;
+  const earliest = fmtISO(addDays(parseISO(mondayOf(trip.dateFrom)), -7*weeks));
+  const latest = fmtISO(addDays(parseISO(fridayOf(trip.dateTo)), 7*weeks));
   const today = fmtISO(new Date());
   return {
     from: earliest > today ? earliest : today, // 이미 지난 날짜로는 수업을 옮길 수 없음
-    to:   fmtISO(addDays(parseISO(trip.dateTo), span))
+    to: latest
   };
 }
 
@@ -1332,7 +1345,7 @@ function renderTrips(){
             <option value="cover">대체(보강)만</option>
           </select>
         </label>
-        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 더 넓게(출장 전후 ±30일) 찾기</label>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 더 넓게(전후 3주) 찾기</label>
         <button class="btnDeleteTrip small danger" style="margin-left:auto">출장 삭제</button>
       </div>
       <div class="hint">자동 배정은 교시마다 1순위 추천(맞교체 우선, 없으면 단순 대체)을 바로 확정합니다. 마음에 안 드는 건은 아래에서 "되돌리기" 후 원하는 후보로 다시 지정하세요.</div>
