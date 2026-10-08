@@ -61,6 +61,15 @@ service cloud.firestore {
                      || (isApproved() && resource.data.teacherId == myTeacherId() && resource.data.status == 'pending');
     }
 
+    // 아직 승인 안 된 이메일로 로그인을 시도하면 본인 명의로 남기는 기록. 승인 전이라 다른 건
+    // 전혀 못 읽고 쓰는 상태에서도 이 한 문서(자기 이메일)만은 만들 수 있게 해서, 관리자가
+    // "관리자" 탭에서 보고 이메일을 몰라도 승인 버튼을 누를 수 있게 한다. 읽기/삭제는 관리자만 —
+    // 본인도 자기가 시도했다는 기록 자체를 읽거나 지울 필요는 없다(승인되면 관리자 쪽에서 정리).
+    match /classswap_login_attempts/{email} {
+      allow create, update: if request.auth != null && myEmail() == email;
+      allow read, delete: if isAdminRole();
+    }
+
     // 그 외 경로는 전부 차단.
     match /{document=**} {
       allow read, write: if false;

@@ -467,6 +467,11 @@
 
   <!-- ================= 관리자 ================= -->
   <section class="panel" id="panel-admin">
+    <div class="card" style="display:none">
+      <h2>아직 미승인 로그인 시도</h2>
+      <div class="hint" style="margin-top:0">승인 안 된 이메일로 누가 로그인을 시도하면 여기 뜹니다. 이메일을 몰라도 버튼 한 번으로 아래 승인 폼에 채워 넣을 수 있어요.</div>
+      <div id="loginAttemptsWrap" style="margin-top:8px"></div>
+    </div>
     <div class="card">
       <h2>승인된 로그인 이메일 관리</h2>
       <div class="hint" style="margin-top:0">
@@ -2367,6 +2372,19 @@ async function fetchApprovalInfo(email){
     return { approved:false };
   }
 }
+// 아직 승인 안 된 이메일로 로그인을 시도하면 기록해둔다 — 관리자가 그 이메일을 몰라도
+// "관리자" 탭에서 보고 바로 승인 버튼을 누를 수 있게 하기 위함. 승인 전이라 이 계정은 admins/
+// classswap 등 다른 데이터는 전혀 못 읽고 쓰므로, 이 한 문서(본인 이메일 소유)만 쓸 수 있다.
+function recordLoginAttempt(email){
+  if(!db || !email) return;
+  const e = email.toLowerCase();
+  if(e === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) return;
+  db.collection('classswap_login_attempts').doc(e).set({
+    email: e,
+    lastAttemptAt: firebase.firestore.FieldValue.serverTimestamp(),
+    attemptCount: firebase.firestore.FieldValue.increment(1)
+  }, { merge: true }).catch(err => console.error('로그인 시도 기록 실패', err));
+}
 let myRole = null; // 'admin' | 'teacher'
 let myLinkedTeacherId = null;
 let unsubscribeTeacherView = null;
@@ -2375,6 +2393,9 @@ let myRequests = [];            // 교사 본인이 올린 classswap_requests (�
 let unsubscribeMyRequests = null;
 let allRequests = [];           // 관리자 화면: 전체 교사 요청(실시간)
 let unsubscribeRequests = null;
+let loginAttempts = [];         // 관리자 화면: 아직 미승인 상태로 로그인 시도한 이메일들(실시간)
+let unsubscribeLoginAttempts = null;
+let approvedEmailSet = new Set(); // renderApprovedEmails가 최신화 — 이미 승인된 이메일은 "로그인 시도" 목록에서 뺀다
 
 // 예전(로그인 도입 전) 버전이 이 브라우저의 localStorage에 썼던 데이터 — Firebase로 바꾸면서
 // 더 이상 앱이 읽지 않게 됐을 뿐, 지운 적은 없어서 그대로 남아있을 가능성이 높다. Firestore가
@@ -2544,11 +2565,12 @@ function renderTeacherView(view){
 
 auth.onAuthStateChanged(async user=>{
   if(!user){
-    currentUser = null; myRole = null; myLinkedTeacherId = null; lastTeacherViewData = null; myRequests = []; allRequests = [];
+    currentUser = null; myRole = null; myLinkedTeacherId = null; lastTeacherViewData = null; myRequests = []; allRequests = []; loginAttempts = [];
     if(unsubscribeStateListener){ unsubscribeStateListener(); unsubscribeStateListener = null; }
     if(unsubscribeTeacherView){ unsubscribeTeacherView(); unsubscribeTeacherView = null; }
     if(unsubscribeMyRequests){ unsubscribeMyRequests(); unsubscribeMyRequests = null; }
     if(unsubscribeRequests){ unsubscribeRequests(); unsubscribeRequests = null; }
+    if(unsubscribeLoginAttempts){ unsubscribeLoginAttempts(); unsubscribeLoginAttempts = null; }
     document.getElementById('userInfo').style.display = 'none';
     document.getElementById('appShell').style.display = 'none';
     document.getElementById('teacherViewRoot').style.display = 'none';
@@ -2561,6 +2583,7 @@ auth.onAuthStateChanged(async user=>{
     currentUser = null;
     document.getElementById('deniedEmailText').textContent = `${user.email} 계정은 아직 승인되지 않았습니다. 관리자에게 이메일을 알려주고 추가를 요청하세요.`;
     showGate('denied');
+    recordLoginAttempt(user.email); // 관리자 화면에 "로그인 시도"로 남겨서, 이메일을 몰라도 눌러서 승인할 수 있게
     return;
   }
   currentUser = user;
@@ -2574,6 +2597,7 @@ auth.onAuthStateChanged(async user=>{
     document.getElementById('teacherViewRoot').style.display = 'none';
     startStateListener();
     startRequestsListener();
+    startLoginAttemptsListener();
     renderApprovedEmails();
   } else {
     document.getElementById('appShell').style.display = 'none';
@@ -2642,6 +2666,51 @@ function approveRequest(r, trip){
   // 실패 시 confirmDecision이 이미 사유를 alert로 보여준다 — 요청은 그대로 남겨서 다시 시도/거절 가능.
 }
 
+// 관리자 화면: 아직 승인 안 된 이메일로 로그인을 시도한 기록을 실시간 구독 — 이메일을 몰라도
+// "승인 추가" 폼에 한 번에 채워 넣을 수 있게 해준다.
+function startLoginAttemptsListener(){
+  if(unsubscribeLoginAttempts) unsubscribeLoginAttempts();
+  unsubscribeLoginAttempts = db.collection('classswap_login_attempts').onSnapshot(snap=>{
+    loginAttempts = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    renderLoginAttempts();
+  }, err=>{ console.error('로그인 시도 목록 불러오기 실패', err); });
+}
+function renderLoginAttempts(){
+  const wrap = document.getElementById('loginAttemptsWrap');
+  if(!wrap) return;
+  // 그 사이 이미 승인된 이메일은(approve 처리에서 보통 같이 지우지만, 혹시 남아있더라도) 안 보여준다.
+  const list = loginAttempts.filter(a => !approvedEmailSet.has(a.email));
+  if(list.length===0){ wrap.innerHTML = ''; wrap.closest('.card').style.display = 'none'; return; }
+  wrap.closest('.card').style.display = '';
+  const sorted = [...list].sort((a,b)=>{
+    const ta = a.lastAttemptAt && a.lastAttemptAt.toMillis ? a.lastAttemptAt.toMillis() : 0;
+    const tb = b.lastAttemptAt && b.lastAttemptAt.toMillis ? b.lastAttemptAt.toMillis() : 0;
+    return tb - ta;
+  });
+  wrap.innerHTML = sorted.map(a=>{
+    const when = a.lastAttemptAt && a.lastAttemptAt.toDate ? a.lastAttemptAt.toDate().toLocaleString('ko-KR') : '';
+    return `<div class="row" style="align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="flex:1;min-width:200px"><b>${escapeHtml(a.email)}</b> <span class="muted" style="font-size:12px">— 로그인 시도 ${a.attemptCount||1}회, 마지막 ${escapeHtml(when)}</span></div>
+      <button class="small primary btnFillApprove" data-email="${escapeAttr(a.email)}">이 이메일로 승인하기</button>
+      <button class="small danger btnDismissAttempt" data-id="${escapeAttr(a.id)}">무시</button>
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('.btnFillApprove').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.getElementById('newApprovedEmail').value = btn.dataset.email;
+      document.getElementById('newApprovedEmail').scrollIntoView({behavior:'smooth', block:'center'});
+      document.getElementById('newApprovedEmail').focus();
+    });
+  });
+  wrap.querySelectorAll('.btnDismissAttempt').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(confirm('이 로그인 시도 기록을 지울까요? (그 이메일 자체를 차단하는 건 아니고, 다시 로그인을 시도하면 또 기록됩니다)')){
+        db.collection('classswap_login_attempts').doc(btn.dataset.id).delete();
+      }
+    });
+  });
+}
+
 // 승인된 이메일(admins 컬렉션) 추가/삭제 — 로그인·접근 가능한 사람 목록을 화면에서 직접 관리.
 function fillTeacherSelect(sel, selectedId){
   sel.innerHTML = '<option value="">선택 안 함</option>' + state.teachers.map(t=>`<option value="${t.id}" ${t.id===selectedId?'selected':''}>${escapeHtml(t.name)}</option>`).join('');
@@ -2659,6 +2728,8 @@ async function renderApprovedEmails(){
     wrap.innerHTML = '<div class="muted">목록을 불러오지 못했습니다: ' + escapeHtml(e.message) + '</div>';
     return;
   }
+  approvedEmailSet = new Set(entries.map(e=>e.email.toLowerCase()).concat([BOOTSTRAP_ADMIN_EMAIL.toLowerCase()]));
+  renderLoginAttempts();
   // 관리자 역할은 따로 맨 위에 묶고, 교사(일반) 역할만 연결된 교사의 일반교과/전문교과(세부그룹)별로
   // 나눠서, 승인 목록이 많아져도 보기 쉽게 한다.
   const groups = {}; // key -> entries[]
@@ -2731,6 +2802,7 @@ document.getElementById('btnAddApprovedEmail').addEventListener('click', async (
   if(role==='teacher' && !linkedTeacherId){ alert('교사(일반) 역할은 연결할 교사를 반드시 선택해야 본인 시간표를 볼 수 있습니다.'); return; }
   try{
     await db.collection('admins').doc(email).set({ addedAt: new Date().toISOString(), addedBy: currentUser ? currentUser.email : '', role, linkedTeacherId });
+    db.collection('classswap_login_attempts').doc(email).delete().catch(()=>{}); // 승인됐으니 "로그인 시도" 목록에서 정리
     input.value = '';
     document.getElementById('newApprovedRole').value = 'teacher';
     document.getElementById('newApprovedTeacher').value = '';

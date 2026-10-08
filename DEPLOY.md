@@ -12,7 +12,7 @@
 
 ## 지금 해야 할 일
 
-1. **Firestore 보안 규칙 다시 붙여넣기 (이번에 `classswap_requests`가 추가되어 또 필수)** — Firebase 콘솔(console.firebase.google.com) → 해당 프로젝트(classswap-8d136) → 왼쪽 메뉴 **빌드 → Firestore Database** → 상단 탭에서 **"규칙"(Rules)** 클릭 → 가운데 에디터에 있던 내용을 전부 지우고, 이 저장소의 **`firestore.rules` 파일 내용을 전체 그대로** 붙여넣기 → 오른쪽 위 **"게시"(Publish)** 버튼 클릭. (일부만 고치지 말고 항상 전체를 통째로 교체하세요. 전에 붙여넣으신 버전에는 교사 요청(`classswap_requests`) 컬렉션 규칙이 없어서, 다시 교체하기 전까진 교사가 "요청하기"를 눌러도 권한 오류가 납니다.)
+1. **Firestore 보안 규칙 다시 붙여넣기 (이번엔 `classswap_login_attempts`가 추가되어 또 필수)** — Firebase 콘솔(console.firebase.google.com) → 해당 프로젝트(classswap-8d136) → 왼쪽 메뉴 **빌드 → Firestore Database** → 상단 탭에서 **"규칙"(Rules)** 클릭 → 가운데 에디터에 있던 내용을 전부 지우고, 이 저장소의 **`firestore.rules` 파일 내용을 전체 그대로** 붙여넣기 → 오른쪽 위 **"게시"(Publish)** 버튼 클릭. (일부만 고치지 말고 항상 전체를 통째로 교체하세요. 전에 붙여넣으신 버전에는 로그인 시도 기록(`classswap_login_attempts`)·교사 요청(`classswap_requests`) 규칙이 없어서, 다시 교체하기 전까진 미승인 계정의 로그인 시도가 기록 안 되고 교사의 "요청하기"도 권한 오류가 납니다.)
 2. **`index.html`을 더블클릭하지 말고, 로컬 웹 서버로 열어야 합니다.** 구글 로그인은 `file://`(더블클릭으로 여는 방식)에서는 동작하지 않습니다(Firebase 자체 제한 — "location.protocol must be http/https" 오류). 그래서:
    - `C:\Projects\ClassSwap` 폴더에서 `node dev-server.js` 실행 (또는 이미 Claude가 백그라운드로 띄워뒀다면 그대로 사용)
    - 브라우저에서 `http://localhost:8080/` 접속 → "Google로 로그인" → edu.jkjin 계정으로 로그인.
