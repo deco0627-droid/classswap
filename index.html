@@ -84,6 +84,9 @@
   details summary::-webkit-details-marker{ display:none; }
   details summary::before{ content:'▸'; color:var(--text-dim); }
   details[open] summary::before{ content:'▾'; }
+  details.group-details{ background:var(--panel); border-width:2px; }
+  details.group-details > summary{ font-size:15px; }
+  details.group-details > .body{ border-top:none; padding:8px 8px 4px; background:transparent; }
   details .body{ padding:12px; border-top:1px solid var(--border); }
   .badge{ display:inline-block; font-size:11px; padding:2px 7px; border-radius:10px; background:var(--panel); color:var(--text-dim); border:1px solid var(--border); }
   .badge.spec{ color:#fff; background:var(--accent-dim); border-color:var(--accent); }
@@ -857,13 +860,48 @@ document.querySelectorAll('nav button').forEach(btn=>{
 function renderTeachers(){
   renderBulkSpecialized();
   const wrap = document.getElementById('teacherList');
-  wrap.innerHTML = '';
   if(state.teachers.length===0){
     wrap.innerHTML = '<div class="muted">등록된 교사가 없습니다. 위 "+ 새 교사" 또는 시간표 가져오기에서 자동으로 추가됩니다.</div>';
     return;
   }
-  for(const t of state.teachers){
+  // 저장/삭제할 때마다 전체가 다시 그려지는데, 펼쳐뒀던 그룹·교사는 그대로 복원한다.
+  const openGroupKeys = new Set(Array.from(wrap.querySelectorAll('details[data-group-key][open]')).map(d=>d.dataset.groupKey));
+  const openTeacherIds = new Set(Array.from(wrap.querySelectorAll('details[data-teacher-id][open]')).map(d=>d.dataset.teacherId));
+  wrap.innerHTML = '';
+
+  // 일반(인문)교과 / 전문교과(세부 그룹별) / 그룹 미지정으로 묶는다 — 교사가 많으면 한 줄씩 쭉
+  // 나열했을 때 스크롤이 너무 길어져서, 필요한 그룹만 펼쳐보게 한다.
+  const general = state.teachers.filter(t=>!t.specialized);
+  const specializedTeachers = state.teachers.filter(t=>t.specialized);
+  const groupMap = {};
+  const ungrouped = [];
+  for(const t of specializedTeachers){
+    const g = (t.specialtyGroup||'').trim();
+    if(!g){ ungrouped.push(t); continue; }
+    (groupMap[g] = groupMap[g] || []).push(t);
+  }
+  const sections = [];
+  if(general.length) sections.push({ key:'__general', title:'일반(인문)교과', teachers: general });
+  for(const g of Object.keys(groupMap).sort()) sections.push({ key:'spec:'+g, title:`전문교과 · ${g}`, teachers: groupMap[g] });
+  if(ungrouped.length) sections.push({ key:'__ungrouped', title:'전문교과 · 세부 그룹 미지정', teachers: ungrouped });
+
+  for(const sec of sections){
+  const groupDet = document.createElement('details');
+  groupDet.className = 'group-details';
+  groupDet.dataset.groupKey = sec.key;
+  if(openGroupKeys.has(sec.key)) groupDet.open = true;
+  const groupSummary = document.createElement('summary');
+  groupSummary.innerHTML = `${escapeHtml(sec.title)} <span class="badge">${sec.teachers.length}명</span>`;
+  groupDet.appendChild(groupSummary);
+  const groupBody = document.createElement('div');
+  groupBody.className = 'body';
+  groupDet.appendChild(groupBody);
+  wrap.appendChild(groupDet);
+
+  for(const t of sec.teachers){
     const det = document.createElement('details');
+    det.dataset.teacherId = t.id;
+    if(openTeacherIds.has(t.id)) det.open = true;
     const summary = document.createElement('summary');
     summary.innerHTML = `${escapeHtml(t.name)} <span class="badge">${escapeHtml(t.subject||'과목 미지정')}</span>` +
       (t.specialized ? `<span class="badge spec">전문교과${t.specialtyGroup?(' · '+escapeHtml(t.specialtyGroup)):''}</span>` : '') +
@@ -901,7 +939,7 @@ function renderTeachers(){
       </div>
     `;
     det.appendChild(body);
-    wrap.appendChild(det);
+    groupBody.appendChild(det);
 
     const blockedWrap = body.querySelector('.f-blocked');
     {
@@ -955,6 +993,7 @@ function renderTeachers(){
       saveState();
       renderTeachers(); renderAllSelects();
     });
+  }
   }
 }
 
