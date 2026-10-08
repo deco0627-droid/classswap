@@ -4,12 +4,16 @@
 
 ## 지금 해야 할 일
 
-1. **Firestore 보안 규칙 붙여넣기** — Firebase 콘솔 → Firestore Database → **"규칙"(Rules)** 탭 → 이 저장소의 `firestore.rules` 파일 내용 **전체를 그대로 복사해서 붙여넣고 "게시"(Publish)**. (일부만 수정하지 말고 항상 전체를 교체하세요.)
-2. **`C:\Projects\ClassSwap\index.html`을 더블클릭해서 열기** → "Google로 로그인" 클릭 → edu.jkjin 계정으로 로그인.
+1. **Firestore 보안 규칙 붙여넣기** — Firebase 콘솔(console.firebase.google.com) → 해당 프로젝트(classswap-8d136) → 왼쪽 메뉴 **빌드 → Firestore Database** → 상단 탭에서 **"규칙"(Rules)** 클릭 → 가운데 에디터에 있던 내용을 전부 지우고, 이 저장소의 **`firestore.rules` 파일 내용을 전체 그대로** 붙여넣기 → 오른쪽 위 **"게시"(Publish)** 버튼 클릭. (일부만 고치지 말고 항상 전체를 통째로 교체하세요.)
+2. **`index.html`을 더블클릭하지 말고, 로컬 웹 서버로 열어야 합니다.** 구글 로그인은 `file://`(더블클릭으로 여는 방식)에서는 동작하지 않습니다(Firebase 자체 제한 — "location.protocol must be http/https" 오류). 그래서:
+   - `C:\Projects\ClassSwap` 폴더에서 `node dev-server.js` 실행 (또는 이미 Claude가 백그라운드로 띄워뒀다면 그대로 사용)
+   - 브라우저에서 `http://localhost:8080/` 접속 → "Google로 로그인" → edu.jkjin 계정으로 로그인.
    - 처음 로그인하면 edu.jkjin은 코드에 고정 승인되어 있어 바로 들어가져야 합니다.
    - 교사 관리 탭 맨 위 **"승인된 로그인 이메일 관리"**에서 다른 선생님 이메일을 추가하면, 그분들도 로그인해서 쓸 수 있습니다.
 3. 데이터가 비어있는 채로 뜰 거예요(Firestore가 비어있으니 정상) — 전에 받아두신 **"백업 내보내기(JSON)"** 파일이 있으면 "백업 가져오기"로 불러와서 기존 데이터를 복원하세요.
 4. 다른 사람 계정(또는 같은 계정 다른 브라우저)으로도 로그인해서, 한쪽에서 고치면 다른 쪽에도 실시간으로 반영되는지 확인해보세요.
+
+(참고) 나중에 실제로 Cloudflare Pages에 배포하면 그 주소는 `https://`라서 이 문제가 없습니다 — `dev-server.js`는 로컬 테스트할 때만 필요합니다.
 
 문제가 있으면(로그인 안 됨, 데이터 안 뜸, 콘솔 에러 등) 그대로 알려주세요.
 
