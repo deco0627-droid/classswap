@@ -120,6 +120,19 @@
       <div id="teacherList"></div>
       <div class="hint">목록은 접혀 있습니다. 이름을 눌러 펼쳐서 과목·전문교과 여부·교체 제외 교사를 설정하세요.</div>
     </div>
+    <div class="card">
+      <h2>여러 교사 한 번에 전문교과로 표시</h2>
+      <div class="hint">전문교과 교사는 서로 간에만(세부 그룹을 적으면 같은 그룹끼리만) 교체 후보가 되고, 일반(인문)교과 교사와는 양쪽 다 서로 후보가 되지 않습니다. 교사 하나하나 펼쳐서 체크하지 않아도, 같은 계열 선생님들을 한 번에 묶을 수 있습니다.</div>
+      <div id="bulkSpecializedList" class="row" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:10px;align-items:flex-end">
+        <div class="field" style="flex:1;min-width:200px">
+          <label>세부 그룹명(선택, 예: 로봇 계열)</label>
+          <input type="text" id="bulkSpecialtyGroup" placeholder="비워두면 전문교과끼리는 다 서로 후보가 됨">
+        </div>
+        <button id="btnBulkSpecializedOn" class="primary small">선택한 교사 전문교과로 표시</button>
+        <button id="btnBulkSpecializedOff" class="small">선택한 교사 전문교과 해제</button>
+      </div>
+    </div>
   </section>
 
   <!-- ================= 시간표 가져오기/편집 ================= -->
@@ -243,6 +256,14 @@
         <div class="field" style="flex:1;min-width:200px">
           <label>사유/메모</label>
           <input type="text" id="tripTitle" placeholder="예: 연구대회 출장">
+        </div>
+        <div class="field">
+          <label>교체 방식</label>
+          <select id="tripModeFilter">
+            <option value="all">맞교체+대체 모두(기본)</option>
+            <option value="swap">맞교체만</option>
+            <option value="cover">대체(보강)만</option>
+          </select>
         </div>
       </div>
       <div class="field" style="margin-top:8px">
@@ -427,13 +448,15 @@ function isExcludedPair(teacherAId, teacherBId, trip){
   return false;
 }
 // ownerTeacher 가 맡던 교시를 candidateTeacher 가 대신할 수 있는가
+// 전문교과는 전문교과끼리, 일반(인문)교과는 일반교과끼리만 서로 대신할 수 있다 — 양방향 제한.
+// 전문교과 세부 그룹까지 둘 다 입력돼 있으면 같은 그룹끼리만(예: 로봇 계열끼리만) 더 좁혀서 제한.
 function groupCompatible(ownerTeacher, candidateTeacher){
-  if(!ownerTeacher || !ownerTeacher.specialized) return true; // 일반 교과는 제한 없음
-  if(!candidateTeacher || !candidateTeacher.specialized) return false;
-  if(ownerTeacher.specialtyGroup && candidateTeacher.specialtyGroup){
+  if(!ownerTeacher || !candidateTeacher) return false;
+  if(!!ownerTeacher.specialized !== !!candidateTeacher.specialized) return false;
+  if(ownerTeacher.specialized && ownerTeacher.specialtyGroup && candidateTeacher.specialtyGroup){
     return ownerTeacher.specialtyGroup === candidateTeacher.specialtyGroup;
   }
-  return true; // 전문교과끼리이나 세부 그룹 미지정 -> 허용
+  return true;
 }
 
 /* =========================================================================
@@ -469,7 +492,7 @@ function computeCandidatesForSlot(A, trip, slot, range){
 }
 
 function computeSwapCandidates(A, trip, slot, range){
-  const candidates = [];
+  let candidates = [];
   for(const B of state.teachers){
     if(B.id===A.id) continue;
     if(isExcludedPair(A.id, B.id, trip)) continue;
@@ -493,6 +516,14 @@ function computeSwapCandidates(A, trip, slot, range){
     }
     partnerOptions.sort((a,b)=>b.score-a.score);
     candidates.push({ teacherId: B.id, mode: partnerOptions.length>0?'swap':'cover', partnerOptions });
+  }
+  // 출장 등록 시 고른 "교체 방식"에 따라 결과를 좁힌다: 맞교체만 원하면 맞바꿀 상대가 있는
+  // 후보만 남기고, 대체(보강)만 원하면 전부 단순 대체 후보로 보여준다(맞교체 가능 여부는 무시).
+  const modeFilter = trip.modeFilter || 'all';
+  if(modeFilter === 'swap'){
+    candidates = candidates.filter(c => c.partnerOptions.length>0);
+  } else if(modeFilter === 'cover'){
+    candidates = candidates.map(c => ({ ...c, mode:'cover', partnerOptions: [] }));
   }
   candidates.sort((a,b)=>{
     const aHas = a.partnerOptions.length>0 ? 1:0, bHas = b.partnerOptions.length>0 ? 1:0;
@@ -611,6 +642,7 @@ document.querySelectorAll('nav button').forEach(btn=>{
    교사 관리 화면
    ========================================================================= */
 function renderTeachers(){
+  renderBulkSpecialized();
   const wrap = document.getElementById('teacherList');
   wrap.innerHTML = '';
   if(state.teachers.length===0){
@@ -685,6 +717,41 @@ document.getElementById('btnAddTeacher').addEventListener('click', ()=>{
   const name = prompt('새 교사 이름');
   if(!name) return;
   state.teachers.push({ id: uid('t'), name: name.trim(), subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours:null });
+  saveState();
+  renderTeachers(); renderAllSelects();
+});
+
+function renderBulkSpecialized(){
+  const wrap = document.getElementById('bulkSpecializedList');
+  if(state.teachers.length===0){
+    wrap.innerHTML = '<div class="muted">등록된 교사가 없습니다.</div>';
+    return;
+  }
+  wrap.innerHTML = state.teachers.map(t=>`
+    <label style="display:flex;align-items:center;gap:4px">
+      <input type="checkbox" value="${t.id}" class="bulkSpecChk">
+      ${escapeHtml(t.name)}${t.specialized?` <span class="badge spec" style="font-size:10px">전문${t.specialtyGroup?'·'+escapeHtml(t.specialtyGroup):''}</span>`:''}
+    </label>`).join('');
+}
+document.getElementById('btnBulkSpecializedOn').addEventListener('click', ()=>{
+  const ids = Array.from(document.querySelectorAll('#bulkSpecializedList .bulkSpecChk:checked')).map(cb=>cb.value);
+  if(ids.length===0){ alert('교사를 먼저 선택하세요.'); return; }
+  const group = document.getElementById('bulkSpecialtyGroup').value.trim();
+  for(const id of ids){
+    const t = getTeacher(id);
+    if(t){ t.specialized = true; t.specialtyGroup = group; }
+  }
+  saveState();
+  renderTeachers(); renderAllSelects();
+  alert(`${ids.length}명을 전문교과${group?`(${group})`:''}로 표시했습니다.`);
+});
+document.getElementById('btnBulkSpecializedOff').addEventListener('click', ()=>{
+  const ids = Array.from(document.querySelectorAll('#bulkSpecializedList .bulkSpecChk:checked')).map(cb=>cb.value);
+  if(ids.length===0){ alert('교사를 먼저 선택하세요.'); return; }
+  for(const id of ids){
+    const t = getTeacher(id);
+    if(t){ t.specialized = false; t.specialtyGroup = ''; }
+  }
   saveState();
   renderTeachers(); renderAllSelects();
 });
@@ -1115,6 +1182,7 @@ document.getElementById('btnAddTrip').addEventListener('click', ()=>{
   const dateFrom = document.getElementById('tripFrom').value;
   const dateTo = document.getElementById('tripTo').value;
   const title = document.getElementById('tripTitle').value.trim();
+  const modeFilter = document.getElementById('tripModeFilter').value;
   if(!teacherId){ alert('교사를 선택하세요.'); return; }
   if(!dateFrom || !dateTo || dateFrom > dateTo){ alert('기간을 올바르게 입력하세요.'); return; }
   const excludedExtra = Array.from(document.querySelectorAll('#tripExtraExclude input:checked')).map(i=>i.value);
@@ -1130,7 +1198,7 @@ document.getElementById('btnAddTrip').addEventListener('click', ()=>{
       }
       return out;
     });
-  const trip = { id: uid('trip'), teacherId, title, dateFrom, dateTo, excludedExtra, affected, decisions: [], createdAt: new Date().toISOString() };
+  const trip = { id: uid('trip'), teacherId, title, dateFrom, dateTo, excludedExtra, modeFilter, affected, decisions: [], createdAt: new Date().toISOString() };
   state.trips.push(trip);
   lastCreatedTripId = trip.id;
   saveState();
@@ -1168,6 +1236,13 @@ function renderTrips(){
       <div class="toolbar">
         <button class="btnAutoAssign small primary">남은 교시 전체 자동 배정</button>
         <button class="btnRecommend small">추천 다시 보기</button>
+        <label style="display:flex;align-items:center;gap:6px">교체 방식
+          <select class="selModeFilter">
+            <option value="all">맞교체+대체 모두</option>
+            <option value="swap">맞교체만</option>
+            <option value="cover">대체(보강)만</option>
+          </select>
+        </label>
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="chkExpand"> 기간 밖(±14일)에서도 찾기</label>
         <button class="btnDeleteTrip small danger" style="margin-left:auto">출장 삭제</button>
       </div>
@@ -1176,6 +1251,7 @@ function renderTrips(){
     `;
     det.appendChild(body);
     wrap.appendChild(det);
+    body.querySelector('.selModeFilter').value = trip.modeFilter || 'all';
 
     const renderReco = ()=>{
       const expand = body.querySelector('.chkExpand').checked;
@@ -1251,6 +1327,11 @@ function renderTrips(){
     renderReco();
     body.querySelector('.btnRecommend').addEventListener('click', renderReco);
     body.querySelector('.chkExpand').addEventListener('change', renderReco);
+    body.querySelector('.selModeFilter').addEventListener('change', e=>{
+      trip.modeFilter = e.target.value;
+      saveState();
+      renderReco();
+    });
     body.querySelector('.btnAutoAssign').addEventListener('click', ()=>{
       const expand = body.querySelector('.chkExpand').checked;
       const { assigned, skipped } = autoAssignTrip(trip, {expand});
