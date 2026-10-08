@@ -443,6 +443,12 @@ function matchSlot(slot, teacherId, date, w, p){
   return !!slot && slot.teacherId===teacherId && slot.date===date && slot.w===w && slot.p===p;
 }
 // 반환: null=공강, 객체=수업있음(해당 시각에 실제로 수업하는 내용)
+// teacher.blockedSlots: 수업이 없어도 그 교사가 그 요일·교시엔 "절대 배정될 수 없는" 고정 사정
+// (회의·당직 등)이 있을 때 쓰는 표시. slotKey(w,p) 문자열 목록.
+function isBlockedSlot(teacherId, w, p){
+  const t = getTeacher(teacherId);
+  return !!(t && (t.blockedSlots||[]).includes(slotKey(w,p)));
+}
 function getEffectiveBusy(teacherId, date, w, p){
   for(const d of allConfirmedDecisions()){
     if(matchSlot(d.vacated, teacherId, date, w, p)) return null;
@@ -450,6 +456,7 @@ function getEffectiveBusy(teacherId, date, w, p){
     if(d.reciprocalVacated && matchSlot(d.reciprocalVacated, teacherId, date, w, p)) return null;
     if(d.reciprocalCovered && matchSlot(d.reciprocalCovered, teacherId, date, w, p)) return {subject:'(대체)', className:''};
   }
+  if(isBlockedSlot(teacherId, w, p)) return {subject:'(배정 불가)', className:''};
   return getBaseCell(teacherId, w, p);
 }
 // getEffectiveBusy와 같은 결정을 보되, "날짜 지정 보기"에 쓰도록 누구 대신/왜 바뀌었는지까지
@@ -476,7 +483,9 @@ function getEffectiveCell(teacherId, date, w, p){
     }
   }
   const base = getBaseCell(teacherId, w, p);
-  return base ? { subject: base.subject, className: base.className, note: null } : null;
+  if(base) return { subject: base.subject, className: base.className, note: null };
+  if(isBlockedSlot(teacherId, w, p)) return { subject: '', className: '', note: '배정 불가(항상)' };
+  return null;
 }
 function slotTouchedByAnyDecision(teacherId, date, w, p){
   for(const d of allConfirmedDecisions()){
@@ -715,7 +724,8 @@ function renderTeachers(){
     summary.innerHTML = `${escapeHtml(t.name)} <span class="badge">${escapeHtml(t.subject||'과목 미지정')}</span>` +
       (t.specialized ? `<span class="badge spec">전문교과${t.specialtyGroup?(' · '+escapeHtml(t.specialtyGroup)):''}</span>` : '') +
       (t.weeklyHours!=null ? `<span class="badge">주당 ${t.weeklyHours}시간</span>` : '') +
-      ((t.excluded||[]).length ? `<span class="badge warn">제외 ${t.excluded.length}명</span>` : '');
+      ((t.excluded||[]).length ? `<span class="badge warn">제외 ${t.excluded.length}명</span>` : '') +
+      ((t.blockedSlots||[]).length ? `<span class="badge warn">배정불가 ${t.blockedSlots.length}교시</span>` : '');
     det.appendChild(summary);
 
     const body = document.createElement('div');
@@ -732,6 +742,10 @@ function renderTeachers(){
         <label>이 교사와는 교체하지 않음 (양방향 적용)</label>
         <div class="row f-excluded"></div>
       </div>
+      <div class="field" style="margin-top:8px">
+        <label>배정 불가 시간(항상) — 수업이 없어도 회의·당직 등으로 이 교사를 이 시간엔 절대 배정할 수 없을 때</label>
+        <div class="f-blocked" style="overflow-x:auto"></div>
+      </div>
       <div class="toolbar" style="margin-top:10px">
         <button class="btnSave small primary">저장</button>
         <button class="btnDelete small danger">삭제</button>
@@ -739,6 +753,23 @@ function renderTeachers(){
     `;
     det.appendChild(body);
     wrap.appendChild(det);
+
+    const blockedWrap = body.querySelector('.f-blocked');
+    {
+      const periods = maxPeriods();
+      let bHtml = '<table><tr><th></th>' + WEEKDAY_LABELS.map(wl=>`<th>${wl}</th>`).join('') + '</tr>';
+      for(let p=1; p<=periods; p++){
+        bHtml += `<tr><th>${p}</th>`;
+        for(let w=0; w<5; w++){
+          if(p > periodsFor(w)){ bHtml += '<td></td>'; continue; }
+          const checked = (t.blockedSlots||[]).includes(slotKey(w,p));
+          bHtml += `<td style="text-align:center;padding:2px"><input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''}></td>`;
+        }
+        bHtml += '</tr>';
+      }
+      bHtml += '</table>';
+      blockedWrap.innerHTML = bHtml;
+    }
 
     const exWrap = body.querySelector('.f-excluded');
     const others = state.teachers.filter(other=>other.id!==t.id);
@@ -760,6 +791,7 @@ function renderTeachers(){
       t.specialized = body.querySelector('.f-spec').checked;
       t.specialtyGroup = body.querySelector('.f-group').value.trim();
       t.excluded = Array.from(exWrap.querySelectorAll('input[type=checkbox]:checked')).map(i=>i.value);
+      t.blockedSlots = Array.from(blockedWrap.querySelectorAll('.f-blocked-chk:checked')).map(cb=>slotKey(parseInt(cb.dataset.w,10), parseInt(cb.dataset.p,10)));
       saveState();
       renderTeachers(); renderAllSelects();
     });
@@ -776,7 +808,7 @@ function renderTeachers(){
 document.getElementById('btnAddTeacher').addEventListener('click', ()=>{
   const name = prompt('새 교사 이름');
   if(!name) return;
-  state.teachers.push({ id: uid('t'), name: name.trim(), subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours:null });
+  state.teachers.push({ id: uid('t'), name: name.trim(), subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours:null, blockedSlots:[] });
   saveState();
   renderTeachers(); renderAllSelects();
 });
@@ -1082,7 +1114,7 @@ document.getElementById('btnCommitImport').addEventListener('click', ()=>{
     const weeklyHours = extractWeeklyHours(row[importState.teacherColIdx]);
     let teacher = state.teachers.find(t=>t.name===name);
     if(!teacher){
-      teacher = { id: uid('t'), name, subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours: weeklyHours ?? null };
+      teacher = { id: uid('t'), name, subject:'', specialized:false, specialtyGroup:'', excluded:[], weeklyHours: weeklyHours ?? null, blockedSlots:[] };
       state.teachers.push(teacher);
       added++;
     } else {
@@ -1121,10 +1153,12 @@ function renderTimetableEditGrid(){
         continue;
       }
       const cell = getBaseCell(teacherId, w, p);
+      const blocked = isBlockedSlot(teacherId, w, p);
       const classBadge = cell && cell.className ? `<div style="font-size:9px;color:var(--text-dim)">${escapeHtml(formatClassCode(cell.className))}</div>` : '';
       const splitBadge = cell && cell.split ? `<div style="font-size:9px;color:var(--accent)" title="분반: ${escapeAttr(cell.splitGroup||'')}">분반 ${escapeHtml(cell.splitGroup||'')}</div>` : '';
       const lockedBadge = cell && cell.locked ? `<div style="font-size:9px;color:var(--danger)" title="교체 불가(고정 수업)">🔒 고정</div>` : '';
-      html += `<td class="cell ${cell?'busy':''}" data-w="${w}" data-p="${p}">${classBadge}${cell?escapeHtml(cell.subject||''):''}${splitBadge}${lockedBadge}</td>`;
+      const blockedBadge = blocked ? `<div style="font-size:9px;color:var(--danger)" title="배정 불가(항상)">🚫 배정불가</div>` : '';
+      html += `<td class="cell ${cell?'busy':''}" data-w="${w}" data-p="${p}" ${blocked&&!cell?'style="background:var(--panel2)"':''}>${classBadge}${cell?escapeHtml(cell.subject||''):''}${splitBadge}${lockedBadge}${blockedBadge}</td>`;
     }
     html += '</tr>';
   }
