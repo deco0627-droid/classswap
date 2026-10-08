@@ -655,6 +655,20 @@ function countMergesInto(teacherId, date, w, p){
   return n;
 }
 
+// 정상 조건(전문교과/일반교과 그룹 일치)으로는 후보가 없을 때 쓰는 완화된 보강 후보 찾기.
+// 제외 교사 설정은 그대로 지키되, 전문교과↔일반교과 그룹 제한만 무시하고 그 블록 전체 교시에
+// 비어 있는 교사를 전부 찾아 "단순 대체"로만 제안한다(맞교체 상대는 찾지 않음).
+function computeRelaxedCandidates(A, trip, slot){
+  const candidates = [];
+  for(const B of state.teachers){
+    if(B.id===A.id) continue;
+    if(isExcludedPair(A.id, B.id, trip)) continue; // 제외 설정은 완화하지 않음
+    if(slot.periods.some(p => getEffectiveBusy(B.id, slot.date, slot.w, p) || slotTouchedByAnyDecision(B.id, slot.date, slot.w, p))) continue;
+    candidates.push({ teacherId: B.id, mode:'cover', partnerOptions: [], crossGroup: !groupCompatible(A,B) });
+  }
+  return candidates;
+}
+
 function recommendForTrip(trip, opts){
   const A = getTeacher(trip.teacherId);
   const results = [];
@@ -1541,11 +1555,15 @@ function renderTrips(){
           if(r.candidates.length===0){
             candHtml = isSplitSlot
               ? '<div class="muted">같은 분반 그룹명을 쓰는 다른 교사가 없습니다(제외 설정이나 분반 그룹명을 확인하세요). 직접 지정하세요.</div>'
-              : '<div class="muted">조건(제외 교사, 전문교과 그룹)을 만족하는 후보가 없습니다. 조건을 다시 확인하거나 직접 지정하세요.</div>';
+              : '<div class="muted">조건(제외 교사, 전문교과 그룹)을 만족하는 후보가 없습니다. 조건을 다시 확인하거나 아래에서 조건을 완화해 찾아보세요.</div>';
           }
           const splitBadge = isSplitSlot ? ` <span class="badge spec">분반: ${escapeHtml(aCell.splitGroup)}</span>` : '';
           row.innerHTML = `<div class="head"><div>${label}${splitBadge}</div></div><div class="candlist"></div>${candHtml}
-            <div class="toolbar"><button class="btnManual small">직접 지정</button></div>`;
+            <div class="candlistRelaxed"></div>
+            <div class="toolbar">
+              ${isSplitSlot ? '' : '<button class="btnRelaxed small">교환 안 되면 보강 후보 찾기(전문교과 제한 없이)</button>'}
+              <button class="btnManual small">직접 지정</button>
+            </div>`;
           const cl = row.querySelector('.candlist');
           r.candidates.slice(0,6).forEach(c=>{
             const B = getTeacher(c.teacherId);
@@ -1582,6 +1600,27 @@ function renderTrips(){
             }
             cl.appendChild(cand);
           });
+          const btnRelaxed = row.querySelector('.btnRelaxed');
+          if(btnRelaxed){
+            btnRelaxed.addEventListener('click', ()=>{
+              const relaxed = computeRelaxedCandidates(A, trip, r.slot);
+              const rcl = row.querySelector('.candlistRelaxed');
+              if(relaxed.length===0){ rcl.innerHTML = '<div class="muted">제외 설정까지 고려해도 그 시간에 비어 있는 교사가 없습니다.</div>'; return; }
+              rcl.innerHTML = '';
+              relaxed.slice(0,8).forEach(c=>{
+                const B = getTeacher(c.teacherId);
+                const cand = document.createElement('div');
+                cand.className = 'cand';
+                cand.innerHTML = `<div><b>${escapeHtml(B.name)}</b> ` +
+                  (c.crossGroup ? '<span class="badge warn">전문교과 제한 무시(교차 그룹 보강)</span>' : '<span class="badge warn">단순 대체</span>') +
+                  `</div><div class="opt"><button class="btnPick small primary">이 교사로 보강 확정</button></div>`;
+                cand.querySelector('.btnPick').addEventListener('click', ()=>{
+                  if(confirmDecision(trip, r.slot, c.teacherId, null, 'cover')){ renderReco(); renderTrips(); renderHistory(); }
+                });
+                rcl.appendChild(cand);
+              });
+            });
+          }
           row.querySelector('.btnManual').addEventListener('click', ()=>{ openManualAssign(trip, r.slot, renderReco); });
         }
         rw.appendChild(row);
