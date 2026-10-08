@@ -1012,17 +1012,16 @@ function renderPeriodTimes(){
   const wrap = document.getElementById('periodTimesRow');
   if(!state.settings.periodTimes) state.settings.periodTimes = {};
   const periods = maxPeriods();
-  let html = '<table><tr><th></th>' + Array.from({length:periods},(_,i)=>i+1).map(p=>`<th>${p}교시</th>`).join('') + '</tr><tr><th>시작</th>';
+  // 가로로 늘어놓으면(교시마다 한 칸) 입력칸이 좁아져 시각이 잘려 보이는 문제가 있어 — 교시를
+  // 세로로 한 줄씩 나열하는 방식으로 바꿈(칸마다 충분한 너비 확보).
+  let html = '<table><tr><th>교시</th><th>시작</th><th>종료</th></tr>';
   for(let p=1;p<=periods;p++){
     const t = state.settings.periodTimes[p] || {};
-    html += `<td><input type="time" class="f-ptime-start" data-p="${p}" value="${t.start||''}" style="width:100px"></td>`;
+    html += `<tr><th>${p}교시</th>
+      <td><input type="time" class="f-ptime-start" data-p="${p}" value="${t.start||''}" style="width:130px"></td>
+      <td><input type="time" class="f-ptime-end" data-p="${p}" value="${t.end||''}" style="width:130px"></td></tr>`;
   }
-  html += '</tr><tr><th>종료</th>';
-  for(let p=1;p<=periods;p++){
-    const t = state.settings.periodTimes[p] || {};
-    html += `<td><input type="time" class="f-ptime-end" data-p="${p}" value="${t.end||''}" style="width:100px"></td>`;
-  }
-  html += '</tr></table>';
+  html += '</table>';
   wrap.innerHTML = html;
   wrap.querySelectorAll('.f-ptime-start, .f-ptime-end').forEach(input=>{
     input.addEventListener('change', ()=>{
