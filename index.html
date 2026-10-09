@@ -18,6 +18,13 @@
 <meta name="twitter:title" content="수업시간 교체 도우미 (ClassSwap)">
 <meta name="twitter:description" content="출장·병가로 생기는 수업시간 교체를 조건에 맞게 자동으로 추천하고, 충돌 없이 관리하는 도구입니다.">
 <meta name="twitter:image" content="https://deco0627-droid.github.io/classswap/og-image.png">
+<!-- PWA: 수업계 컴퓨터 등에 "앱처럼 설치"해서 쓸 수 있게 해줌(브라우저 주소창의 설치 아이콘, 또는
+     크롬 메뉴 → "ClassSwap 설치…"). 설치해도 로그인·데이터는 그대로 Firebase를 통하고, 관리자
+     쓰기 권한 요구사항도 똑같이 적용된다 — 그저 탭을 닫아버릴 위험 없이 항상 띄워두기 편해질 뿐. -->
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#030712">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -2622,6 +2629,11 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
+// PWA 설치 가능하게(크롬 주소창 설치 아이콘 뜸) — file://로 열었을 때는 service worker 등록이
+// 아예 안 되므로 조용히 건너뛴다(어차피 그 경우 구글 로그인 자체가 안 됨).
+if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  navigator.serviceWorker.register('sw.js').catch(err=>console.error('서비스 워커 등록 실패', err));
+}
 // 이 이메일은 Firestore의 admins 목록이 비어있어도(최초 1회) 항상 승인됨 — 관리자 목록을
 // 추가/삭제할 사람이 아무도 못 들어가는 상황을 막기 위한 최소한의 고정 계정.
 const BOOTSTRAP_ADMIN_EMAIL = 'edu.jkjin@gmail.com';
