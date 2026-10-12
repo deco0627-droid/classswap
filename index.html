@@ -1296,7 +1296,7 @@ function renderTeachers(){
           const cell = getBaseCell(t.id, w, p);
           const noteVal = (t.blockedNotes && t.blockedNotes[slotKey(w,p)]) || '';
           const classLabel = cell
-            ? `<div style="font-size:11px;color:var(--text)" title="${escapeAttr(cell.subject||'')}">${escapeHtml(cell.subject||'(수업)')}</div>`
+            ? `<div style="font-size:26px;font-weight:700;color:var(--danger)" title="${escapeAttr(cell.subject||'')}">${escapeHtml(cell.subject||'(수업)')}</div>`
             : `<div style="font-size:11px;color:var(--text-dim)">공강</div>`;
           bHtml += `<td style="text-align:center;padding:6px;${cell?'background:var(--accent-dim)':''}">${classLabel}<input type="checkbox" class="f-blocked-chk" data-w="${w}" data-p="${p}" ${checked?'checked':''} style="transform:scale(1.5);cursor:pointer">`
             + `<input type="text" class="f-blocked-note" data-w="${w}" data-p="${p}" value="${escapeAttr(noteVal)}" placeholder="메모(예: 병가 대체)" style="display:block;width:92px;margin:4px auto 0;font-size:10px;padding:2px 4px"></td>`;
