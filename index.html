@@ -155,8 +155,11 @@
   th, td{ border:1px solid var(--border); padding:5px 6px; text-align:center; }
   th{ background:rgba(30,41,59,0.7); color:var(--text-dim); font-weight:600; }
   th.wd-label{ font-size:28px; padding:8px 6px; color:var(--accent); text-shadow:0 0 12px rgba(56,189,248,0.4); }
-  td.cell{ cursor:pointer; min-width:54px; height:34px; }
-  td.cell.busy{ background:rgba(56,189,248,0.14); }
+  td.cell{ cursor:pointer; min-width:58px; height:36px; }
+  /* 수업이 있는 칸(공강과 비교되게) — 월화수목 요일 머리글(28px)보다 2 정도 작게, 굵은 빨간색으로
+     바로 눈에 띄게. 배지(분반·고정·배정불가 등)는 각자 자기 색·크기를 inline으로 갖고 있어서
+     이 규칙에 안 덮인다(과목명 텍스트에만 적용됨). */
+  td.cell.busy{ background:rgba(56,189,248,0.14); font-size:26px; font-weight:700; color:var(--danger); }
   td.cell.editing input{ width:100%; padding:2px; }
   .muted{ color:var(--text-dim); }
   .grid-import-table td, .grid-import-table th{ font-size:11px; padding:3px 4px; }
@@ -1910,7 +1913,12 @@ function renderDateSpecificView(teacherId, dateStr){
     } else if(eff){
       const classBadge = eff.className ? `<div style="font-size:9px;color:var(--text-dim)">${escapeHtml(formatClassCode(eff.className))}</div>` : '';
       const noteBadge = eff.note ? `<div style="font-size:10px;color:#111">${escapeHtml(eff.note)}</div>` : '';
-      inner = `${classBadge}${escapeHtml(eff.subject||'')}${noteBadge}`;
+      // 대체 등으로 바뀐 칸은 배경이 밝은 주황(var(--warn))이라, 수업칸 공통 빨간 글씨(.busy)보다
+      // 어두운 글씨가 더 잘 읽혀서 여기서만 직접 덮어쓴다.
+      const subjectHtml = eff.note
+        ? `<span style="color:#111">${escapeHtml(eff.subject||'')}</span>`
+        : escapeHtml(eff.subject||'');
+      inner = `${classBadge}${subjectHtml}${noteBadge}`;
     } else {
       inner = '';
     }
